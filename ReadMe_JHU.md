@@ -1,6 +1,8 @@
 
 # Instructions for running Isca on MARCC at JHU
 
+These instructions are intended to get you up-and-running with a simple Held-Suarez test case. They assume you are starting with a default user environment on MARCC, so some changes might be needed if you have already modified your environment. Please don't hesistate to get in touch if you have any questions.
+
 First, to enable `git`, run:
 
 ```{bash}
@@ -15,7 +17,7 @@ $ cd Isca
 $ git checkout remotes/origin/jhu_master
 ```
 
-Before you can run Isca, you'll to setup the Anaconda python distribution:
+Before you can run Isca, you'll need to setup the Anaconda python distribution:
 
 ```{bash}
 $ cd ~
