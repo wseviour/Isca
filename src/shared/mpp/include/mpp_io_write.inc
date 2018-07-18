@@ -511,12 +511,12 @@
                   call mpp_error( FATAL, 'MPP_WRITE_META_FIELD: only legal packing values are 1,2,4,8.' )
           end select
           call netcdf_err( error, mpp_file(unit), field=field )
-#ifndef use_netCDF3
-          if(shuffle .NE. 0 .OR. deflate .NE. 0) then
-             error = NF_DEF_VAR_DEFLATE(mpp_file(unit)%ncid, field%id, shuffle, deflate, deflate_level)
-             call netcdf_err( error, mpp_file(unit), field=field )
-          endif
-#endif
+!#ifndef use_netCDF3
+!          if(shuffle .NE. 0 .OR. deflate .NE. 0) then
+!             error = NF_DEF_VAR_DEFLATE(mpp_file(unit)%ncid, field%id, shuffle, deflate, deflate_level)
+!             call netcdf_err( error, mpp_file(unit), field=field )
+!          endif
+!#endif
 #endif    
       else
           varnum = varnum + 1
