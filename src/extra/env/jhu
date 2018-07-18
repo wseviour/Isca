@@ -4,12 +4,10 @@ module purge
 module load hdf5/intel
 module load netcdf/intel/4.3.3.1
 module load netcdf-fortran/intel/4.4.2
-#module load nco/4.5.2
 module load git/2.6.4
 module load openmpi/intel/1.8.4
 module load parallel_studio_xe_2015/15.0.2
 module load slurm
-#module load esmf
 
 export CPATH=$CPATH:/cm/shared/apps/netcdf-fortran/intel/4.4.2/include
 
