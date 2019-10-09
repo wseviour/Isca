@@ -5,7 +5,7 @@ from isca.util import exp_progress
 #from ntfy import notify
 import os
 
-NCORES = 32
+NCORES = 16
 base_dir = os.path.dirname(os.path.realpath(__file__))
 
 # a CodeBase can be a directory on the computer,
