@@ -5,7 +5,7 @@ from isca.util import exp_progress
 #from ntfy import notify
 import os
 
-NCORES = 32
+NCORES = 16
 base_dir = os.path.dirname(os.path.realpath(__file__))
 
 # a CodeBase can be a directory on the computer,
@@ -115,6 +115,9 @@ namelist = Namelist({
         'prescribe_initial_dist':True,
         'evaporation':False,   
         'albedo_value': 0.3,
+        'albedo_choice': 3,
+        'lat_glacier': 60,
+        'higher_albedo':0.7
     },
 
     'qe_moist_convection_nml': {
@@ -240,6 +243,10 @@ namelist = Namelist({
         'topography_option': 'input',
     },
 
+    'dry_convection_nml': {
+        'tau': 10000.,  
+        'gamma': 1.0,
+    },
 })
 
 if __name__=="__main__":
@@ -255,7 +262,7 @@ if __name__=="__main__":
     for conv in conv_schemes:
         for depth_val in depths:
             for per_value in pers:
-                exp = Experiment('soc_mars_mk36_per_value'+str((per_value))+'_'+conv+'_mld_'+str(depth_val)+'_with_mola_topo', codebase=cb)
+                exp = Experiment('soc_mars_mk36_per_value'+str((per_value))+'_'+conv+'_mld_'+str(depth_val)+'_with_mola_topo_ice_caps', codebase=cb)
                 exp.clear_rundir()
 
                 exp.diag_table = diag
