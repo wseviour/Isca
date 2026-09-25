@@ -108,6 +108,7 @@ character(len=128), parameter :: tagname = '$Name: siena_201211 $'
 integer :: id_ps, id_u, id_v, id_t, id_vor, id_div, id_omega, id_wspd, id_slp
 integer :: id_pres_full, id_pres_half, id_zfull, id_zhalf, id_vort_norm, id_EKE
 integer :: id_uu, id_vv, id_tt, id_omega_omega, id_uv, id_omega_t, id_vw, id_uw, id_ut, id_vt, id_v_vor, id_uz, id_vz, id_omega_z
+integer :: id_u_nudge = 0
 integer, allocatable, dimension(:) :: id_tr, id_utr, id_vtr, id_wtr !extra advection diags added by RG
 real :: gamma, expf, expf_inverse
 character(len=8) :: mod_name = 'dynamics'
@@ -134,6 +135,7 @@ real, allocatable, dimension(:,:,:,:  ) :: ug, vg, tg        ! last dimension is
 real, allocatable, dimension(:,:,:,:,:) :: grid_tracers      ! 4'th dimension is for time level, last dimension is for tracer number
 real, allocatable, dimension(:,:      ) :: surf_geopotential
 real, allocatable, dimension(:,:,:    ) :: vorg, divg        ! no time levels needed
+real, allocatable, dimension(:,:,:    ) :: nudging_u_dt      ! stratospheric nudging tendency for diagnostics
 
 integer, allocatable, dimension(:) :: tracer_vert_advect_scheme
 
@@ -158,7 +160,8 @@ logical :: do_mass_correction     = .true. , &
            triang_trunc           = .true.,  &
            graceful_shutdown      = .false., &
            make_symmetric         = .false., & !GC/RG Add namelist option to run model as zonally symmetric
-           do_spec_tracer_filter  = .false.
+           do_spec_tracer_filter  = .false., &
+           do_strat_nudging       = .false.    ! Relax stratospheric winds towards target profile/value
 
 
 integer :: damping_order       = 2, &
@@ -199,8 +202,12 @@ real    :: damping_coeff       = 1.15740741e-4, & ! (one tenth day)**-1
          ocean_topog_smoothing = .93, &
            initial_sphum       = 0.0, &
      reference_sea_level_press =  101325.,&
-        water_correction_limit = 0.0, & !mj
-           raw_filter_coeff    = 1.0     !st Default value of 1.0 turns the RAW part of the filtering off. 0.5 is the desired value, but this appears unstable. Requires further testing.
+         water_correction_limit = 0.0, & !mj
+           raw_filter_coeff    = 1.0, &  !st Default value of 1.0 turns the RAW part of the filtering off. 0.5 is the desired value, but this appears unstable. Requires further testing.
+           nudging_u_val       = 10.0,    & ! Target zonal wind for stratospheric nudging (m/s)
+           nudging_tau         = 21600.0, & ! Stratospheric nudging relaxation timescale (seconds, default 6 hours)
+           nudging_p_bottom    = 90.0e2,  & ! Bottom pressure where nudging ramps from 0 (Pa, default 90 hPa)
+           nudging_p_top       = 50.0e2     ! Top pressure where nudging reaches full strength (Pa, default 50 hPa)
 
 logical :: json_logging = .false.    ! print steps to std out in a machine readable format
 !===============================================================================================
@@ -224,7 +231,9 @@ namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff
                                  graceful_shutdown, json_logging,                                    &
                                  graceful_shutdown,                                                  &
                                  make_symmetric,                                                     & !GC/RG add make_symmetric option
-                                 do_spec_tracer_filter
+                                 do_spec_tracer_filter,                                              &
+                                 do_strat_nudging, nudging_u_val, nudging_tau,                       &
+                                 nudging_p_bottom, nudging_p_top
 
 contains
 
@@ -663,6 +672,11 @@ psg=0.; ug=0.; vg=0.; tg=0.
 ln_ps=cmplx(0.,0.); vors=cmplx(0.,0.); divs=cmplx(0.,0.); ts=cmplx(0.,0.); spec_tracers=cmplx(0.,0.)
 pk=0.; bk=0.; vorg=0.; divg=0.; surf_geopotential=0.; grid_tracers=0.
 
+if (do_strat_nudging) then
+  allocate (nudging_u_dt(is:ie, js:je, num_levels))
+  nudging_u_dt = 0.
+endif
+
 return
 end subroutine allocate_fields
 !===============================================================================================
@@ -751,6 +765,15 @@ endif
 if((do_energy_correction .or. do_water_correction) .and. .not.do_mass_correction) then
   call error_mesg('check_dynamics_nml','.not.do_mass_correction must be .true. when either &
            &do_energy_correction or do_water_correction is .true.', FATAL)
+endif
+
+if (do_strat_nudging) then
+  if (nudging_tau <= 0.0) then
+    call error_mesg('check_dynamics_nml', 'nudging_tau must be positive', FATAL)
+  endif
+  if (nudging_p_bottom <= nudging_p_top .or. nudging_p_top <= 0.0) then
+    call error_mesg('check_dynamics_nml', 'nudging_p_bottom must be greater than nudging_p_top > 0', FATAL)
+  endif
 endif
 
 return
@@ -899,6 +922,10 @@ do k=1,num_levels
     dt_vg_tmp(:,j,k) = dt_vg_tmp(:,j,k) - (vorg(:,j,k) + coriolis(j))*ug(:,j,k,current)
   enddo
 enddo
+
+if (do_strat_nudging) then
+  call strat_nudging(ug(:,:,:,current), p_full, dt_ug_tmp)
+endif
 
 call vor_div_from_uv_grid(dt_ug_tmp, dt_vg_tmp, dt_vors, dt_divs, triang = triang_trunc)
 
@@ -1113,6 +1140,47 @@ wg(:,:,num_levels+1) = 0.0
 
 return
 end subroutine four_in_one
+
+!================================================================================
+
+subroutine strat_nudging(u_curr, p_full, dt_u)
+
+! Relaxes zonal wind towards nudging_u_val following SNAPSI vertical profile:
+! - No nudging below nudging_p_bottom (default 90 hPa)
+! - Full strength above nudging_p_top (default 50 hPa)
+! - Smooth cubic Hermite ramp between nudging_p_bottom and nudging_p_top
+! - Relaxation timescale nudging_tau (default 6 hours = 21600 s)
+
+real, intent(in),    dimension(is:ie, js:je, num_levels) :: u_curr, p_full
+real, intent(inout), dimension(is:ie, js:je, num_levels) :: dt_u
+
+integer :: i, j, k
+real :: p, x, weight, u_nudge
+
+do k = 1, num_levels
+  do j = js, je
+    do i = is, ie
+      p = p_full(i, j, k)
+      if (p <= nudging_p_top) then
+        weight = 1.0
+      else if (p >= nudging_p_bottom) then
+        weight = 0.0
+      else
+        x = (nudging_p_bottom - p) / (nudging_p_bottom - nudging_p_top)
+        weight = 3.0*x*x - 2.0*x*x*x
+      endif
+
+      u_nudge = - weight * (u_curr(i, j, k) - nudging_u_val) / nudging_tau
+      dt_u(i, j, k) = dt_u(i, j, k) + u_nudge
+      if (allocated(nudging_u_dt)) then
+        nudging_u_dt(i, j, k) = u_nudge
+      endif
+    enddo
+  enddo
+enddo
+
+return
+end subroutine strat_nudging
 
 !================================================================================
 
@@ -1573,6 +1641,7 @@ deallocate(ln_ps, vors, divs, ts)
 deallocate(vorg, divg)
 deallocate(surf_geopotential)
 deallocate(spec_tracers, grid_tracers)
+if(allocated(nudging_u_dt)) deallocate(nudging_u_dt)
 
 if(use_implicit) call implicit_end
 call spectral_damping_end
@@ -1739,6 +1808,11 @@ enddo
 id_vort_norm = register_diag_field(mod_name, 'vort_norm', Time, 'vorticity norm', '1/(m*sec)')
 id_EKE       = register_diag_field(mod_name, 'EKE', Time, 'eddy kinetic energy', 'J/m^2')
 
+if (do_strat_nudging) then
+  id_u_nudge = register_diag_field(mod_name, 'udt_nudge', axes_3d_full, Time, &
+                                   'zonal wind nudging tendency', 'm/sec**2')
+endif
+
 return
 end subroutine spectral_diagnostics_init
 !===================================================================================
@@ -1768,6 +1842,7 @@ if(id_t   > 0)    used = send_data(id_t,   t_grid, Time)
 if(id_vor > 0)    used = send_data(id_vor, vorg, Time)
 if(id_div > 0)    used = send_data(id_div, divg, Time)
 if(id_omega > 0)  used = send_data(id_omega, wg_full, Time)
+if(id_u_nudge > 0 .and. allocated(nudging_u_dt)) used = send_data(id_u_nudge, nudging_u_dt, Time)
 
 if(id_zfull > 0 .or. id_zhalf > 0) then
   call compute_pressures_and_heights(t_grid, p_surf, surf_geopotential, z_full, z_half, p_full, p_half, tr_grid(:,:,:,time_level,nhum))
