@@ -3,6 +3,12 @@
 `MiMA`
 * CNTL case of the MiMA model described in <https://doi.org/10.1175/JCLI-D-17-0127.1>
 
+`mima_qflux`
+* MiMA configuration with convective gravity wave drag (cg_drag) and analytic Q-fluxes, following the control simulation setup in Ning et al. (2026, <https://wcd.copernicus.org/articles/7/277/2026/>) and Garfinkel et al. (2020, <https://doi.org/10.1029/2019MS001925>).
+
+`cg_drag`
+* Non-orographic (convective) gravity wave drag test case (Alexander & Dunkerton 1999, JAS).
+
 `bucket_hydrology`
 * As described in Isca paper (Vallis et al., 2017) but without q-fluxes
 
