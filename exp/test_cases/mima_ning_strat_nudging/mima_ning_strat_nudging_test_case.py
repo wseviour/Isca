@@ -40,6 +40,7 @@ Key features matching Ning et al. (2026) / MiMA v2.0:
 import os
 
 from isca import IscaCodeBase, DiagTable, Experiment, Namelist, GFDL_BASE
+from isca.util import interpolate_output
 
 NCORES = 16
 RESOLUTION = 'T42', 40
@@ -314,8 +315,33 @@ exp.namelist = namelist = Namelist({
 
 exp.set_resolution(*RESOLUTION)
 
+# Pressure levels (in Pa) extending from 1000 hPa to 0.1 hPa (25 standard levels):
+PLEVELS = [
+    100000, 92500, 85000, 70000, 60000, 50000, 40000, 30000, 25000, 20000,
+    15000, 10000, 7000, 5000, 3000, 2000, 1000, 700, 500, 300, 200, 100, 50, 20, 10
+]
+
+def interpolate_to_pressure_levels(experiment, num_months, p_levs=PLEVELS, files=['atmos_monthly', 'atmos_daily']):
+    """
+    Interpolate experiment output from model levels (sigma/hybrid) to pressure levels
+    using isca.util.interpolate_output.
+
+    Outputs are saved as 'plev_atmos_monthly.nc' and 'plev_atmos_daily.nc' in each run directory.
+    """
+    for m in range(1, num_months + 1):
+        outdir = experiment.get_outputdir(m)
+        for fname in files:
+            infile = os.path.join(outdir, f'{fname}.nc')
+            outfile = os.path.join(outdir, f'plev_{fname}.nc')
+            if os.path.exists(infile):
+                print(f"Interpolating {infile} -> {outfile} onto pressure levels...")
+                interpolate_output(infile, outfile, all_fields=True, p_levs=p_levs, var_names=['slp', 'height'])
+
 if __name__ == '__main__':
     cb.compile()
     exp.run(1, use_restart=False, num_cores=NCORES)
     for i in range(2, NUM_MONTHS + 1):
         exp.run(i, num_cores=NCORES)
+
+    # Post-processing: interpolate sigma/hybrid output to pressure levels
+    interpolate_to_pressure_levels(exp, NUM_MONTHS, p_levs=PLEVELS)
