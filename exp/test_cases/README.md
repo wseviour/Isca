@@ -12,6 +12,9 @@
 `strat_nudging_from_file`
 * Stratospheric nudging test case relaxing towards a 3D time-evolving zonal wind field read from an external NetCDF file, with linear interpolation in time at every model time step, following the SNAPSI vertical profile and relaxation timescale.
 
+`mima_ning_strat_nudging`
+* Comprehensive MiMA configuration replicating the experimental setup of Ning et al. (2026, <https://wcd.copernicus.org/articles/7/277/2026/>) and White et al. (2022, <https://journals.ametsoc.org/view/journals/atsc/79/8/JAS-D-21-0237.1.xml>), including 1/6° realistic topography with ocean smoothing, interpolated land-sea mask, land-sea heat capacity contrast ($10^7$ vs $1-3\times 10^8\ \mathrm{J\,m^{-2}\,K^{-1}}$), realistic surface albedo with polar ice caps and desert albedos, enhanced land momentum and moisture roughness, convective gravity wave drag, analytic Q-fluxes, and stratospheric zonal wind nudging towards an external NetCDF file following the SNAPSI protocol.
+
 `cg_drag`
 * Non-orographic (convective) gravity wave drag test case (Alexander & Dunkerton 1999, JAS).
 

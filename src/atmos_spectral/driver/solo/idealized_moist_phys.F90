@@ -42,9 +42,10 @@ use        diag_manager_mod, only: register_diag_field, send_data
 use              column_mod, only: get_num_levels, get_surf_geopotential, get_axis_id
 use            spec_mpp_mod, only: get_grid_domain, grid_domain 
 #else
-use          transforms_mod, only: get_grid_domain, grid_domain
+use          transforms_mod, only: get_grid_domain, grid_domain, get_grid_boundaries
 use   spectral_dynamics_mod, only: get_axis_id, get_num_levels, get_surf_geopotential, diffuse_surf_water
-#endif 
+#endif
+use          topography_mod, only: get_ocean_mask 
 
 use        surface_flux_mod, only: surface_flux, gp_surface_flux
 
@@ -140,6 +141,9 @@ real :: roughness_heat = 0.05
 real :: roughness_moist = 0.05
 real :: roughness_mom = 0.05
 real :: land_roughness_prefactor = 1.0
+integer :: roughness_choice = 1
+real :: mom_roughness_land = 1.0
+real :: q_roughness_land = 1.0
 
 ! options for adding idealised land
 
@@ -175,7 +179,8 @@ namelist / idealized_moist_phys_nml / turb, lwet_convection, do_bm, do_ras, roug
                                       max_bucket_depth_land, robert_bucket, raw_bucket, &
                                       do_lscale_cond, do_socrates_radiation, do_lcl_diffusivity_depth, damping_coeff_bucket, &
                                       finite_bucket_depth_over_land, &
-                                      do_local_heating
+                                      do_local_heating,                              &
+                                      roughness_choice, mom_roughness_land, q_roughness_land
 
 
 integer, parameter :: num_time_levels = 2 ! Add bucket - number of time levels added to allow timestepping in this module
@@ -347,6 +352,11 @@ integer, intent(in) :: nhum
 real, intent(in), dimension(:,:) :: rad_lon_2d, rad_lat_2d, rad_lonb_2d, rad_latb_2d, t_surf_init
 
 integer :: io, ierr, nml_unit, stdlog_unit, seconds, days, id, jd, kd
+integer :: i, j
+real :: lat
+real, allocatable, dimension(:) :: blon, blat
+logical, allocatable, dimension(:,:) :: ocean_mask
+logical :: water_file_exists
 real, dimension (size(rad_lonb_2d,1)-1, size(rad_latb_2d,2)-1) :: sgsmtn ! needed for damping_driver
 
 ! added for land reading
@@ -616,6 +626,17 @@ if(trim(land_option) .eq. 'input')then
     ! convert data in land nc file to land logical array
     where(land_ones > 0.) land = .true.
 
+elseif(trim(land_option) .eq. 'interpolated')then
+  allocate(blon(is:ie+1), blat(js:je+1))
+  call get_grid_boundaries(blon, blat)
+  allocate(ocean_mask(is:ie, js:je))
+  water_file_exists = get_ocean_mask(blon, blat, ocean_mask)
+  if (.not. water_file_exists) then
+     call error_mesg('idealized_moist_phys', 'land_option="interpolated" but water data file does not exist', FATAL)
+  endif
+  where (.not. ocean_mask) land = .true.
+  deallocate(blon, blat, ocean_mask)
+
 elseif(trim(land_option) .eq. 'zsurf')then
 	! wherever zsurf is greater than some threshold height then make land = .true.
   where ( z_surf > 10. ) land = .true.
@@ -624,7 +645,22 @@ elseif(trim(land_option) .eq. 'all_land')then
 endif
 
 !option to alter surface roughness length over land
-if(trim(land_option) .eq. 'input') then
+if (roughness_choice == 4) then
+    ! MiMA / Ning et al. (2026): high land momentum roughness and lat-dependent evaporation
+    where (land) rough_mom = roughness_mom * mom_roughness_land
+    do j = js, je
+       lat = rad_lat(is, j) * 180.0 / pi
+       where (land(:, j)) rough_moist(:, j) = roughness_moist * q_roughness_land + &
+            (1.e-7) * exp(-abs(lat - 0.0)**3 / (2.0 * 15.0)) + &
+            (1.e-25) * exp(-abs(lat - 45.0)**3 / (2.0 * 30.0)) + &
+            (1.e-25) * exp(-abs(lat + 45.0)**3 / (2.0 * 30.0))
+    enddo
+else if (roughness_choice == 3) then
+    where (land)
+       rough_mom   = roughness_mom * mom_roughness_land
+       rough_moist = roughness_moist * q_roughness_land
+    end where
+else if(trim(land_option) .eq. 'input') then
 
     where(land)
     rough_mom   = land_roughness_prefactor * rough_mom

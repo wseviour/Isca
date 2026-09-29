@@ -108,6 +108,17 @@ real    :: depth           = 40.0,         & !s 2013 implementation
 !s Surface albedo options
 real    :: land_albedo_prefactor = 1.0 !s where(land) albedo = land_albedo_prefactor * albedo_value
 
+!s Additional MiMA / Ning et al. options
+real    :: heat_capacity   = -1.0,         &
+           land_capacity   = -1.0,         &
+           trop_capacity   = -1.0,         &
+           const_albedo    = -1.0,         &
+           albedo_cntrNH   = 68.0,         &
+           albedo_cntrSH   = 64.0,         &
+           albedo_desert   = 0.20,         &
+           Tm              = -1.0
+integer :: surface_choice  = 1
+
 !s Begin mj extra options
 integer :: albedo_choice    = 1 ! 1->constant or following 'where(land)', 2->NH or SH step, 3->N-S symmetric step, 4->profile with albedo_exp, 5->tanh with albedo_cntr,albedo_wdth
 logical :: do_qflux         = .false. !mj
@@ -158,7 +169,10 @@ namelist/mixed_layer_nml/ evaporation, depth, qflux_amp, qflux_width, tconst,&
                               add_latent_heat_flux_anom,flux_lhe_anom_file_name,&
                               flux_lhe_anom_field_name, specify_constant_sst,&
                               sst_prescribed_constant,                       &
-                              do_ape_sst, qflux_field_name
+                              do_ape_sst, qflux_field_name,                  &
+                              heat_capacity, land_capacity, trop_capacity,   &
+                              const_albedo, albedo_cntrNH, albedo_cntrSH,    &
+                              albedo_desert, surface_choice, Tm
 
 !=================================================================================================================================
 
@@ -240,7 +254,7 @@ integer:: ierr, io, unit, num_tr, n, global_num_lon, global_num_lat
 character(32) :: tr_name
 
 ! mj shallower ocean in tropics, land-sea contrast
- real :: trop_capacity,land_capacity,lon,lat,loc_cap
+ real :: lon,lat,loc_cap
  integer :: i,k
 integer, dimension(4) :: siz
 character(len=12) :: ctmp1='     by     ', ctmp2='     by     '
@@ -311,11 +325,13 @@ enddo
 call get_deg_lon(deg_lon)
 
 !s Adding MiMA options
-   ! if(do_sc_sst) do_read_sst = .true.
-   trop_capacity   = trop_depth*RHO_CP
-   land_capacity   = land_depth*RHO_CP
-   if(trop_capacity .le. 0.) trop_capacity = depth*RHO_CP
-   if(land_capacity .le. 0.) land_capacity = depth*RHO_CP
+   if (Tm > 0.0) tconst = Tm
+   if (const_albedo > 0.0) albedo_value = const_albedo
+   if (heat_capacity > 0.0) depth = heat_capacity / RHO_CP
+   if (land_capacity <= 0.0 .and. land_depth > 0.0) land_capacity = land_depth*RHO_CP
+   if (trop_capacity <= 0.0 .and. trop_depth > 0.0) trop_capacity = trop_depth*RHO_CP
+   if (trop_capacity <= 0.0) trop_capacity = depth*RHO_CP
+   if (land_capacity <= 0.0) land_capacity = depth*RHO_CP
 !s End MiMA options
 
     !mj read fixed SSTs
@@ -483,6 +499,22 @@ select case (albedo_choice)
        albedo(:,j) = albedo_value + (higher_albedo-albedo_value)*&
              0.5*(1+tanh((lat-albedo_cntr)/albedo_wdth))
      enddo
+  case (7) ! MiMA / Ning et al. (2026): tanh NH & SH with albedo_wdth, plus desert albedo
+     do j = 1, size(t_surf,2)
+        lat = deg_lat(js+j-1)
+        albedo(:,j) = albedo_value + &
+             (higher_albedo-albedo_value)*0.5*(1.0+tanh((lat-albedo_cntrNH)/albedo_wdth)) + &
+             (higher_albedo-albedo_value)*0.5*(1.0-tanh((lat+albedo_cntrSH)/albedo_wdth))
+        do i = 1, size(t_surf,1)
+           lon = deg_lon(is+i-1)
+           if ( (lon .gt. 118. .and. lon .lt. 145. .and. lat .gt. -30. .and. lat .lt. -19.) .or. &
+                (lon .gt. 80.  .and. lon .lt. 105. .and. lat .gt. 32.  .and. lat .lt. 40.)  .or. &
+                (lon .gt. 80.  .and. lon .lt. 115. .and. lat .gt. 40.  .and. lat .lt. 52.)  .or. &
+                ((lon .gt. 345. .or. lon .lt. 50.)  .and. lat .gt. 13.  .and. lat .lt. 30.) ) then
+              albedo(i,j) = albedo_value + albedo_desert
+           endif
+        enddo
+     enddo
 end select
 
 albedo_initial=albedo
@@ -554,6 +586,9 @@ if (do_calc_eff_heat_cap) then
                   enddo
                enddo
             enddo
+         endif
+         if(trim(land_option) .eq. 'interpolated')then
+            where(land) land_sea_heat_capacity = land_capacity
          endif
     else  !trim(land_option) .eq. 'input'
         where(land) land_sea_heat_capacity = land_h_capacity_prefactor*land_sea_heat_capacity
