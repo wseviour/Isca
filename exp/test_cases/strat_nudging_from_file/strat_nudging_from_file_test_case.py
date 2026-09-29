@@ -79,10 +79,11 @@ diag.add_field('dynamics', 'ps', files=['atmos_monthly', 'atmos_daily'], time_av
 diag.add_field('dynamics', 'bk', files=['atmos_monthly', 'atmos_daily'])
 diag.add_field('dynamics', 'pk', files=['atmos_monthly', 'atmos_daily'])
 
-# Daily and monthly 3D winds and temperature (ucomp, vcomp, temp)
+# Daily and monthly 3D winds, temperature, and geopotential height (ucomp, vcomp, temp, height)
 diag.add_field('dynamics', 'ucomp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 diag.add_field('dynamics', 'vcomp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 diag.add_field('dynamics', 'temp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'height', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 exp.diag_table = diag
 
 exp.namelist = namelist = Namelist({
