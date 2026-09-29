@@ -6,6 +6,12 @@
 `mima_qflux`
 * MiMA configuration with convective gravity wave drag (cg_drag) and analytic Q-fluxes, following the control simulation setup in Ning et al. (2026, <https://wcd.copernicus.org/articles/7/277/2026/>) and Garfinkel et al. (2020, <https://doi.org/10.1029/2019MS001925>).
 
+`strat_nudging`
+* Stratospheric nudging test case based on MiMA configuration with relaxation towards a uniform zonal wind (e.g. 10 m/s) following the SNAPSI protocol (Hitchcock et al. 2022, <https://gmd.copernicus.org/articles/15/5073/2022/>).
+
+`strat_nudging_from_file`
+* Stratospheric nudging test case relaxing towards a 3D time-evolving zonal wind field read from an external NetCDF file, with linear interpolation in time at every model time step, following the SNAPSI vertical profile and relaxation timescale.
+
 `cg_drag`
 * Non-orographic (convective) gravity wave drag test case (Alexander & Dunkerton 1999, JAS).
 

@@ -41,21 +41,28 @@ exp.inputfiles = [os.path.join(GFDL_BASE, 'input/rrtm_input_files/ozone_1990.nc'
 
 diag = DiagTable()
 diag.add_file('atmos_monthly', 30, 'days', time_units='days')
-diag.add_field('dynamics', 'ps', time_avg=True)
-diag.add_field('dynamics', 'bk')
-diag.add_field('dynamics', 'pk')
-diag.add_field('atmosphere', 'precipitation', time_avg=True)
-diag.add_field('mixed_layer', 't_surf', time_avg=True)
-diag.add_field('mixed_layer', 'flux_oceanq', time_avg=True)
-diag.add_field('dynamics', 'sphum', time_avg=True)
-diag.add_field('dynamics', 'ucomp', time_avg=True)
-diag.add_field('dynamics', 'vcomp', time_avg=True)
-diag.add_field('dynamics', 'temp', time_avg=True)
-diag.add_field('dynamics', 'vor', time_avg=True)
-diag.add_field('dynamics', 'div', time_avg=True)
-diag.add_field('rrtm_radiation', 'co2', time_avg=True)
-diag.add_field('damping', 'udt_cgwd', time_avg=True)     # cg_drag zonal wind tendency
-diag.add_field('dynamics', 'udt_nudge', time_avg=True)   # Stratospheric nudging zonal wind tendency
+diag.add_file('atmos_daily', 1, 'days', time_units='days')
+
+# Monthly 2D & physics diagnostics
+diag.add_field('atmosphere', 'precipitation', files=['atmos_monthly'], time_avg=True)
+diag.add_field('mixed_layer', 't_surf', files=['atmos_monthly'], time_avg=True)
+diag.add_field('mixed_layer', 'flux_oceanq', files=['atmos_monthly'], time_avg=True)
+diag.add_field('dynamics', 'sphum', files=['atmos_monthly'], time_avg=True)
+diag.add_field('dynamics', 'vor', files=['atmos_monthly'], time_avg=True)
+diag.add_field('dynamics', 'div', files=['atmos_monthly'], time_avg=True)
+diag.add_field('rrtm_radiation', 'co2', files=['atmos_monthly'], time_avg=True)
+diag.add_field('damping', 'udt_cgwd', files=['atmos_monthly'], time_avg=True)     # cg_drag zonal wind tendency
+diag.add_field('dynamics', 'udt_nudge', files=['atmos_monthly'], time_avg=True)   # Stratospheric nudging zonal wind tendency
+
+# Coordinate and pressure variables for both monthly and daily files
+diag.add_field('dynamics', 'ps', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'bk', files=['atmos_monthly', 'atmos_daily'])
+diag.add_field('dynamics', 'pk', files=['atmos_monthly', 'atmos_daily'])
+
+# Daily and monthly 3D winds and temperature (ucomp, vcomp, temp)
+diag.add_field('dynamics', 'ucomp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'vcomp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'temp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 exp.diag_table = diag
 
 exp.namelist = namelist = Namelist({
