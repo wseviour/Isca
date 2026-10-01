@@ -10,7 +10,7 @@ use fms_mod, only: write_version_number, file_exist, close_file, stdlog, error_m
                    FATAL, WARNING, read_data, field_size, uppercase, mpp_pe, check_nml_error
 
 ! cp_air needed for rrtmg and pstd_mks needed for pref calculation
-use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, dens_h2o, dens_vapor 
+use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, dens_h2o, dens_vapor, pi 
 
 use        time_manager_mod, only: time_type, get_time, operator( + )
 
