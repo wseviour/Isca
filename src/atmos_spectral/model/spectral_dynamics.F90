@@ -56,7 +56,8 @@ use         transforms_mod, only: transforms_init,         transforms_end,      
                                   vor_div_from_uv_grid,    uv_grid_from_vor_div,      &
                                   horizontal_advection,    get_grid_domain,           &
                                   get_spec_domain,         grid_domain,               &
-                                  spectral_domain,         get_deg_lon, get_deg_lat
+                                  spectral_domain,         get_deg_lon, get_deg_lat,  &
+                                  trans_grid_to_fourier,   trans_fourier_to_grid
 
 use     vert_advection_mod, only: vert_advection, SECOND_CENTERED, FOURTH_CENTERED, VAN_LEER_LINEAR, FINITE_VOLUME_PARABOLIC, &
                                   ADVECTIVE_FORM
@@ -143,6 +144,9 @@ real, allocatable, dimension(:        ) :: nudge_u_times     ! time coordinates 
 integer                                 :: num_nudge_times = 0
 real, allocatable, dimension(:,:,:    ) :: u_target_m, u_target_p ! cached bounding records on local PE
 integer                                 :: rec_loaded_m = -1, rec_loaded_p = -1
+logical                                 :: do_nudge_wave_filter = .false.
+real, allocatable, dimension(:,:,:    ) :: nudge_diff_u      ! working array for wavenumber filtering
+complex, allocatable, dimension(:,:,: ) :: nudge_fourier_diff ! complex Fourier coefficients for filtering
 
 integer, allocatable, dimension(:) :: tracer_vert_advect_scheme
 
@@ -182,9 +186,12 @@ integer :: damping_order       = 2, &
            num_spherical       = 43,  & ! T42
            fourier_inc         = 1,   &
            num_levels          = 18,  &
-           num_steps           = 1
+           num_steps           = 1,   &
+           nudge_wave_min      = 0,   &  ! Minimum zonal wavenumber to nudge (s >= 0)
+           nudge_wave_max      = -1      ! Maximum zonal wavenumber to nudge (-1 = all)
 
-integer, dimension(2) ::  print_interval=(/1,0/)
+integer, dimension(2)  :: print_interval=(/1,0/)
+integer, dimension(32) :: nudge_wave_list = -1  ! Explicit list of zonal wavenumbers to nudge
 
 character(len=64) :: vert_coord_option      = 'even_sigma',   &
                      damping_option         = 'resolution_dependent', &
@@ -247,7 +254,8 @@ namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff
                                  do_strat_nudging, nudging_u_val, nudging_tau,                       &
                                  nudging_p_bottom, nudging_p_top,                                    &
                                  nudge_u_from_file, nudge_u_file, nudge_u_varname,                   &
-                                 nudge_u_time_offset_days
+                                 nudge_u_time_offset_days,                                           &
+                                 nudge_wave_min, nudge_wave_max, nudge_wave_list
 
 contains
 
@@ -513,7 +521,7 @@ call set_domain(grid_domain)
 call get_time(Time_step, seconds, days)
 dt_real = 86400*days + seconds
 
-if (do_strat_nudging .and. nudge_u_from_file) then
+if (do_strat_nudging) then
   call strat_nudging_init
 endif
 
@@ -794,6 +802,15 @@ if (do_strat_nudging) then
   endif
   if (nudge_u_from_file .and. trim(nudge_u_file) == '') then
     call error_mesg('check_dynamics_nml', 'nudge_u_file must not be empty when nudge_u_from_file=.true.', FATAL)
+  endif
+  if (nudge_wave_min < 0) then
+    call error_mesg('check_dynamics_nml', 'nudge_wave_min must be >= 0', FATAL)
+  endif
+  if (nudge_wave_max >= 0 .and. nudge_wave_max < nudge_wave_min) then
+    call error_mesg('check_dynamics_nml', 'nudge_wave_max must be >= nudge_wave_min (or -1 for all)', FATAL)
+  endif
+  if (nudge_wave_max > lon_max/2) then
+    call error_mesg('check_dynamics_nml', 'nudge_wave_max cannot exceed lon_max/2', FATAL)
   endif
 endif
 
@@ -1166,13 +1183,30 @@ end subroutine four_in_one
 
 subroutine strat_nudging_init
 
-! Initializes file-based stratospheric nudging:
-! - Verifies file existence and resolution match with model
-! - Reads time coordinates of target records from NetCDF file
-! - Allocates local PE memory buffers for time-interpolated nudging
+! Initializes stratospheric nudging:
+! - If wavenumber filtering requested, sets up work arrays
+! - If file-based nudging requested:
+!   - Verifies file existence and resolution match with model
+!   - Reads time coordinates of target records from NetCDF file
+!   - Allocates local PE memory buffers for time-interpolated nudging
 
 integer :: u_file_siz(4), ncid, varid, ierr, k
 character(len=8) :: ch1, ch2, ch3, ch4, ch5, ch6
+
+do_nudge_wave_filter = (nudge_wave_list(1) >= 0 .or. &
+                        nudge_wave_min > 0 .or. &
+                        nudge_wave_max >= 0)
+
+if (do_nudge_wave_filter) then
+  if (allocated(nudge_diff_u)) deallocate(nudge_diff_u)
+  if (allocated(nudge_fourier_diff)) deallocate(nudge_fourier_diff)
+  allocate(nudge_diff_u(is:ie, js:je, num_levels))
+  allocate(nudge_fourier_diff(0:lon_max/2, js:je, num_levels))
+  nudge_diff_u = 0.0
+  nudge_fourier_diff = cmplx(0.0, 0.0)
+endif
+
+if (.not. nudge_u_from_file) return
 
 if (.not. file_exist(trim(nudge_u_file))) then
   call error_mesg('strat_nudging_init', 'Nudging target file '//trim(nudge_u_file)//' does not exist', FATAL)
@@ -1240,6 +1274,9 @@ subroutine strat_nudging(Time, u_curr, p_full, dt_u)
 ! - If nudge_u_from_file is true: target u is read from NetCDF file and linearly
 !   interpolated in time to current model time step.
 ! - If nudge_u_from_file is false: target u is spatially uniform nudging_u_val.
+! - If do_nudge_wave_filter is true: target difference is filtered in Fourier space
+!   along longitude to retain only specified zonal wavenumbers (s=0 for zonal-mean,
+!   s in [min, max] or explicit list).
 ! - No nudging below nudging_p_bottom (default 90 hPa)
 ! - Full strength above nudging_p_top (default 50 hPa)
 ! - Smooth cubic Hermite ramp between nudging_p_bottom and nudging_p_top
@@ -1249,8 +1286,9 @@ type(time_type), intent(in) :: Time
 real, intent(in),    dimension(is:ie, js:je, num_levels) :: u_curr, p_full
 real, intent(inout), dimension(is:ie, js:je, num_levels) :: dt_u
 
-integer :: i, j, k, k1, k2, sec, dy
+integer :: i, j, k, k1, k2, sec, dy, s
 real :: p, x, weight, u_nudge, t_eff, alpha, u_target_val
+logical :: keep_wave
 
 if (nudge_u_from_file) then
   call get_time(Time, sec, dy)
@@ -1305,37 +1343,92 @@ if (nudge_u_from_file) then
   endif
 endif
 
-do k = 1, num_levels
-  do j = js, je
-    do i = is, ie
-      p = p_full(i, j, k)
-      if (p <= nudging_p_top) then
-        weight = 1.0
-      else if (p >= nudging_p_bottom) then
-        weight = 0.0
-      else
-        x = (nudging_p_bottom - p) / (nudging_p_bottom - nudging_p_top)
-        weight = 3.0*x*x - 2.0*x*x*x
-      endif
+if (do_nudge_wave_filter) then
+  if (nudge_u_from_file) then
+    if (k1 == k2) then
+      nudge_diff_u = u_curr - u_target_m
+    else
+      nudge_diff_u = u_curr - ((1.0 - alpha) * u_target_m + alpha * u_target_p)
+    endif
+  else
+    nudge_diff_u = u_curr - nudging_u_val
+  endif
 
-      if (nudge_u_from_file) then
-        if (k1 == k2) then
-          u_target_val = u_target_m(i, j, k)
+  ! Forward 1D FFT along longitude for local latitude slices
+  nudge_fourier_diff = trans_grid_to_fourier(nudge_diff_u)
+
+  ! Mask Fourier modes not in the selected wavenumber set
+  do s = 0, lon_max/2
+    if (nudge_wave_list(1) >= 0) then
+      keep_wave = any(nudge_wave_list == s)
+    else
+      keep_wave = (s >= nudge_wave_min) .and. (nudge_wave_max < 0 .or. s <= nudge_wave_max)
+    endif
+    if (.not. keep_wave) then
+      nudge_fourier_diff(s, :, :) = cmplx(0.0, 0.0)
+    endif
+  enddo
+
+  ! Inverse 1D FFT back to physical grid
+  nudge_diff_u = trans_fourier_to_grid(nudge_fourier_diff)
+
+  ! Apply SNAPSI vertical profile and relaxation timescale
+  do k = 1, num_levels
+    do j = js, je
+      do i = is, ie
+        p = p_full(i, j, k)
+        if (p <= nudging_p_top) then
+          weight = 1.0
+        else if (p >= nudging_p_bottom) then
+          weight = 0.0
         else
-          u_target_val = (1.0 - alpha) * u_target_m(i, j, k) + alpha * u_target_p(i, j, k)
+          x = (nudging_p_bottom - p) / (nudging_p_bottom - nudging_p_top)
+          weight = 3.0*x*x - 2.0*x*x*x
         endif
-      else
-        u_target_val = nudging_u_val
-      endif
 
-      u_nudge = - weight * (u_curr(i, j, k) - u_target_val) / nudging_tau
-      dt_u(i, j, k) = dt_u(i, j, k) + u_nudge
-      if (allocated(nudging_u_dt)) then
-        nudging_u_dt(i, j, k) = u_nudge
-      endif
+        u_nudge = - weight * nudge_diff_u(i, j, k) / nudging_tau
+        dt_u(i, j, k) = dt_u(i, j, k) + u_nudge
+        if (allocated(nudging_u_dt)) then
+          nudging_u_dt(i, j, k) = u_nudge
+        endif
+      enddo
     enddo
   enddo
-enddo
+
+else
+  ! Standard gridpoint nudging (original code path, zero FFT overhead)
+  do k = 1, num_levels
+    do j = js, je
+      do i = is, ie
+        p = p_full(i, j, k)
+        if (p <= nudging_p_top) then
+          weight = 1.0
+        else if (p >= nudging_p_bottom) then
+          weight = 0.0
+        else
+          x = (nudging_p_bottom - p) / (nudging_p_bottom - nudging_p_top)
+          weight = 3.0*x*x - 2.0*x*x*x
+        endif
+
+        if (nudge_u_from_file) then
+          if (k1 == k2) then
+            u_target_val = u_target_m(i, j, k)
+          else
+            u_target_val = (1.0 - alpha) * u_target_m(i, j, k) + alpha * u_target_p(i, j, k)
+          endif
+        else
+          u_target_val = nudging_u_val
+        endif
+
+        u_nudge = - weight * (u_curr(i, j, k) - u_target_val) / nudging_tau
+        dt_u(i, j, k) = dt_u(i, j, k) + u_nudge
+        if (allocated(nudging_u_dt)) then
+          nudging_u_dt(i, j, k) = u_nudge
+        endif
+      enddo
+    enddo
+  enddo
+endif
 
 return
 end subroutine strat_nudging
@@ -1803,6 +1896,9 @@ if(allocated(nudging_u_dt)) deallocate(nudging_u_dt)
 if(allocated(nudge_u_times)) deallocate(nudge_u_times)
 if(allocated(u_target_m)) deallocate(u_target_m)
 if(allocated(u_target_p)) deallocate(u_target_p)
+if(allocated(nudge_diff_u)) deallocate(nudge_diff_u)
+if(allocated(nudge_fourier_diff)) deallocate(nudge_fourier_diff)
+do_nudge_wave_filter = .false.
 rec_loaded_m = -1
 rec_loaded_p = -1
 num_nudge_times = 0
