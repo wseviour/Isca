@@ -137,33 +137,55 @@ The stratospheric nudging framework is implemented in `src/atmos_spectral/model/
    * Allocates local domain buffers (`u_target_m`, `u_target_p`) for holding the bounding time records.
 
 ### 5.2 Tendency Computation (`strat_nudging`)
+
 During each dynamical timestep, before horizontal advection and spectral transforms:
 
-1. **Temporal Interpolation:**
-   Model time is converted to days since origin ($t_\mathrm{eff} = \mathrm{dy} + \mathrm{sec}/86400.0 + \Delta t_\mathrm{offset}$). Bounding records $k_1, k_2$ are located:
-   $$u_\mathrm{target}(t) = (1 - \alpha) u_\mathrm{target}(k_1) + \alpha u_\mathrm{target}(k_2), \quad \alpha = \frac{t_\mathrm{eff} - t_1}{t_2 - t_1}$$
-   Records are cached in memory and reloaded only when the simulation steps into a new target interval.
+#### 1. Temporal Interpolation
+Model time is converted to days since origin ($t_\mathrm{eff} = \mathrm{dy} + \mathrm{sec}/86400.0 + \Delta t_\mathrm{offset}$). Bounding records $k_1, k_2$ are located and linearly interpolated:
 
-2. **Wavenumber Filtering via Real-to-Complex FFT:**
-   * Computes the raw wind difference: $\Delta u(\lambda, \phi, p) = u_\mathrm{model} - u_\mathrm{target}$.
-   * Calls the FMS 1D real-to-complex FFT (`rfftf`) along each latitude circle $\phi_j$:
-     $$\hat{U}(s, \phi_j, p) = \mathcal{F}\{\Delta u(\lambda, \phi_j, p)\}, \quad s = 0, 1, \dots, N_\mathrm{lon}/2$$
-   * Zeroes out any complex Fourier coefficient $\hat{U}(s)$ where wavenumber $s$ is outside the specified range:
-     $$\hat{U}_\mathrm{filtered}(s) = \begin{cases} \hat{U}(s) & \text{if } s \in [s_\mathrm{min}, s_\mathrm{max}] \text{ or } s \in \text{nudge\_wave\_list} \\ 0 & \text{otherwise} \end{cases}$$
-   * Calls inverse FFT (`rfftb`) to reconstruct the filtered physical difference $\Delta u_\mathrm{filtered}(\lambda, \phi, p)$.
+$$
+u_\mathrm{target}(t) = (1 - \alpha) u_\mathrm{target}(k_1) + \alpha u_\mathrm{target}(k_2), \quad \alpha = \frac{t_\mathrm{eff} - t_1}{t_2 - t_1}
+$$
 
-3. **Vertical Hermite Transition Ramp:**
-   To prevent spurious wave reflection and Gibbs oscillations at the lower nudging boundary, the relaxation weight $w(p)$ follows a smooth cubic Hermite polynomial:
-   $$w(p) = \begin{cases}
-   0 & p > p_\mathrm{bottom} \quad (p > 90\text{ hPa}) \\
-   3x^2 - 2x^3 & p_\mathrm{top} \le p \le p_\mathrm{bottom}, \quad x = \frac{p_\mathrm{bottom} - p}{p_\mathrm{bottom} - p_\mathrm{top}} \\
-   1 & p < p_\mathrm{top} \quad (p < 50\text{ hPa})
-   \end{cases}$$
+Records are cached in memory and reloaded only when the simulation steps into a new target interval.
 
-4. **Tendency Application & Diagnostics:**
-   The nudging tendency is applied directly to the physical zonal wind tendency:
-   $$\left(\frac{\partial u}{\partial t}\right)_\mathrm{total} = \left(\frac{\partial u}{\partial t}\right)_\mathrm{dynamics} - \frac{w(p)}{\tau} \Delta u_\mathrm{filtered}$$
-   The actual applied acceleration is cached in `nudging_u_dt` and exported to the diagnostic table as field `'udt_nudge'` in $\mathrm{m\ s^{-2}}$.
+#### 2. Wavenumber Filtering via Real-to-Complex FFT
+The model computes the raw wind difference $\Delta u(\lambda, \phi, p) = u_\mathrm{model} - u_\mathrm{target}$ and executes a 1D real-to-complex FFT (`rfftf`) along each latitude circle $\phi_j$:
+
+$$
+\hat{U}(s, \phi_j, p) = \mathcal{F}\{\Delta u(\lambda, \phi_j, p)\}, \quad s = 0, 1, \dots, N_\mathrm{lon}/2
+$$
+
+Any complex Fourier coefficient $\hat{U}(s)$ outside the target wavenumber set is zeroed out:
+
+$$
+\hat{U}_\mathrm{filtered}(s) = \begin{cases}
+\hat{U}(s) & \text{if } s \in [s_\mathrm{min}, s_\mathrm{max}] \text{ or } s \in \text{nudge\_wave\_list} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+The inverse FFT (`rfftb`) then reconstructs the filtered physical wind difference $\Delta u_\mathrm{filtered}(\lambda, \phi, p)$.
+
+#### 3. Vertical Hermite Transition Ramp
+To prevent spurious wave reflection and Gibbs oscillations at the lower nudging boundary, the relaxation weight $w(p)$ follows a smooth cubic Hermite polynomial:
+
+$$
+w(p) = \begin{cases}
+0 & p > p_\mathrm{bottom} \quad (p > 90\text{ hPa}) \\
+3x^2 - 2x^3 & p_\mathrm{top} \le p \le p_\mathrm{bottom}, \quad x = \frac{p_\mathrm{bottom} - p}{p_\mathrm{bottom} - p_\mathrm{top}} \\
+1 & p < p_\mathrm{top} \quad (p < 50\text{ hPa})
+\end{cases}
+$$
+
+#### 4. Tendency Application & Diagnostics
+The nudging tendency is applied directly to the physical zonal wind tendency:
+
+$$
+\left(\frac{\partial u}{\partial t}\right)_\mathrm{total} = \left(\frac{\partial u}{\partial t}\right)_\mathrm{dynamics} - \frac{w(p)}{\tau} \Delta u_\mathrm{filtered}
+$$
+
+The actual applied acceleration is cached in `nudging_u_dt` and exported to the diagnostic table as field `'udt_nudge'` in $\mathrm{m\ s^{-2}}$.
 
 ---
 
