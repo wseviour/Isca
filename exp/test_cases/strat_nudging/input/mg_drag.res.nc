@@ -1,0 +1,1 @@
+/home/links/ws359/Isca/exp/test_cases/mg_drag/input/mg_drag.res.nc

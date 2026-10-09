@@ -1,43 +1,87 @@
 """
-Stratospheric Nudging Test Case in Isca.
+MiMA Stratospheric Nudging Test Case with Realistic Orographic & Non-Orographic GWD.
 
-This test case is based on the MiMA configuration from Ning et al. (2026, WCD)
-and Garfinkel et al. (2020, JAMES), with stratospheric zonal wind nudging
-following the SNAPSI protocol (Hitchcock et al. 2022, GMD):
-- Ning et al. (2026): https://wcd.copernicus.org/articles/7/277/2026/
-- SNAPSI protocol: https://gmd.copernicus.org/articles/15/5073/2022/
+Physical and Dynamical Configuration:
+1. Orographic (mountain) Gravity Wave Drag (mg_drag, Pierrehumbert & Stern scheme),
+   using tuned parameters and ERA5-derived subgrid mountain height variance.
+2. Non-orographic (convective) Gravity Wave Drag (cg_drag, Alexander & Dunkerton scheme)
+   with enhanced extratropical momentum flux launch in the Northern Hemisphere
+   (Bt_nh = 0.0010 Pa, phi0n = 25.0 deg N, dphin = 10.0 deg) to weaken the stratospheric
+   polar vortex (SPV) and mitigate the cold SPV bias, while maintaining equatorial QBO launch.
+3. Seasonally-varying CMIP5 ozone forcing (ozone_1990_cmip5.nc).
+4. Realistic topography (1/6 deg Navy with ocean smoothing 0.995), land-sea heat capacity
+   contrast, realistic albedo choice 7, and realistic surface roughness choice 4.
+5. Prescribed analytic ocean Q-fluxes and full Betts-Miller convection.
+6. 40 uneven vertical sigma levels extending up to ~0.01 hPa.
 
-Stratospheric Nudging Configuration:
-- Relax stratospheric zonal wind towards u = 10 m/s everywhere.
-- Vertical profile:
-  * No nudging below 90 hPa (p >= 90 hPa: weight = 0).
-  * Full strength above 50 hPa (p <= 50 hPa: weight = 1).
-  * Smooth cubic Hermite ramp between 90 hPa and 50 hPa:
-    w(x) = 3*x^2 - 2*x^3, where x = (90 hPa - p) / (90 hPa - 50 hPa).
-- Relaxation timescale: tau = 6 hours = 21600 s.
-
-Base Physics & Resolution:
-- T42 horizontal resolution with 40 uneven sigma levels (L40) extending to ~0.1 hPa.
-- Alexander & Dunkerton (1999) convective gravity wave drag (cg_drag) with equatorial
-  launch parameters from Ning et al. (2026) / White et al. (2022).
-- Analytic ocean Q-fluxes via qflux_mod (Jucker & Gerber 2017).
-- RRTM radiation with climatological ozone (ozone_1990) and 390 ppmv CO2.
-- Betts-Miller convection and Monin-Obukhov boundary layer scheme.
+Stratospheric Nudging:
+- Relaxes stratospheric zonal winds towards an external target profile (u_target_yr23.nc)
+  using real-to-complex Fourier filtering along latitude circles (spectral_dynamics.F90).
+- Default configuration: Zonal-Mean Nudging (wavenumber s = 0).
+- Comments in spectral_dynamics_nml demonstrate how to easily switch to:
+  * Planetary wave nudging (waves 0 to 2, s in {0, 1, 2})
+  * Full-field gridpoint nudging (all wavenumbers)
+  * Arbitrary wavenumber lists (e.g. s in {0, 2})
 """
 import os
+import sys
+import argparse
+
+# Ensure compiler and toolchain in current Python environment are on PATH
+conda_bin = os.path.dirname(sys.executable)
+if conda_bin not in os.environ.get('PATH', '').split(':'):
+    os.environ['PATH'] = f"{conda_bin}:{os.environ.get('PATH', '')}"
 
 from isca import IscaCodeBase, DiagTable, Experiment, Namelist, GFDL_BASE
+from isca.util import interpolate_output
 
-NCORES = 16
+parser = argparse.ArgumentParser(description="Run MiMA stratospheric nudging test case")
+parser.add_argument('--months', type=int, default=1, help="Number of months to run (default: 1)")
+parser.add_argument('--days', type=int, default=None, help="Override run duration in days (for short test)")
+parser.add_argument('--cores', type=int, default=16, help="Number of MPI cores (default: 16)")
+args = parser.parse_args()
+
+NCORES = args.cores
 RESOLUTION = 'T42', 40
-NUM_MONTHS = 6
+NUM_MONTHS = args.months
 
 cb = IscaCodeBase.from_directory(GFDL_BASE)
 
 exp = Experiment('strat_nudging_test', codebase=cb)
 exp.clear_rundir()
 
-exp.inputfiles = [os.path.join(GFDL_BASE, 'input/rrtm_input_files/ozone_1990.nc')]
+current_dir = os.path.dirname(os.path.realpath(__file__))
+
+# 1. Orographic subgrid mountain height file (ghprime)
+mg_drag_file = os.path.join(current_dir, 'input', 'mg_drag.res.nc')
+if not os.path.exists(mg_drag_file):
+    fallback = os.path.join(GFDL_BASE, 'exp/test_cases/mg_drag/input/mg_drag.res.nc')
+    if os.path.exists(fallback):
+        mg_drag_file = fallback
+    else:
+        raise FileNotFoundError(f"Subgrid mountain height file not found at {mg_drag_file} or {fallback}")
+
+# 2. Seasonally-varying CMIP5 ozone input file
+ozone_file = os.path.join(current_dir, 'input', 'ozone_1990_cmip5.nc')
+if not os.path.exists(ozone_file):
+    ozone_file = os.path.join(GFDL_BASE, 'input/rrtm_input_files/ozone_1990.nc')
+    ozone_file_name = 'ozone_1990'
+else:
+    ozone_file_name = 'ozone_1990_cmip5'
+
+# 3. Stratospheric nudging target wind file
+target_u_file = os.path.join(current_dir, 'input', 'u_target_yr23.nc')
+if not os.path.exists(target_u_file):
+    raise FileNotFoundError(f"Nudging target wind file not found at {target_u_file}")
+
+# Input files required for this experiment
+exp.inputfiles = [
+    ozone_file,
+    os.path.join(GFDL_BASE, 'input/navy_topography/navy_topography.data.nc'),
+    os.path.join(GFDL_BASE, 'input/navy_topography/navy_pctwater.data.nc'),
+    mg_drag_file,
+    target_u_file,
+]
 
 diag = DiagTable()
 diag.add_file('atmos_monthly', 30, 'days', time_units='days')
@@ -45,141 +89,118 @@ diag.add_file('atmos_daily', 1, 'days', time_units='days')
 
 # Monthly 2D & physics diagnostics
 diag.add_field('atmosphere', 'precipitation', files=['atmos_monthly'], time_avg=True)
+diag.add_field('atmosphere', 'rh', files=['atmos_monthly'], time_avg=True)
 diag.add_field('mixed_layer', 't_surf', files=['atmos_monthly'], time_avg=True)
 diag.add_field('mixed_layer', 'flux_oceanq', files=['atmos_monthly'], time_avg=True)
-diag.add_field('dynamics', 'sphum', files=['atmos_monthly'], time_avg=True)
+diag.add_field('mixed_layer', 'albedo', files=['atmos_monthly'], time_avg=True)
+diag.add_field('mixed_layer', 'heat_cap', files=['atmos_monthly'], time_avg=True)
 diag.add_field('dynamics', 'vor', files=['atmos_monthly'], time_avg=True)
 diag.add_field('dynamics', 'div', files=['atmos_monthly'], time_avg=True)
 diag.add_field('rrtm_radiation', 'co2', files=['atmos_monthly'], time_avg=True)
-diag.add_field('damping', 'udt_cgwd', files=['atmos_monthly'], time_avg=True)     # cg_drag zonal wind tendency
-diag.add_field('dynamics', 'udt_nudge', files=['atmos_monthly'], time_avg=True)   # Stratospheric nudging zonal wind tendency
 
-# Coordinate and pressure variables for both monthly and daily files
+# Convective and Orographic Gravity Wave Drag diagnostics
+diag.add_field('damping', 'udt_cgwd', files=['atmos_monthly'], time_avg=True)
+diag.add_field('damping', 'udt_gwd', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('damping', 'vdt_gwd', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('damping', 'taubx', files=['atmos_monthly'], time_avg=True)
+diag.add_field('damping', 'tauby', files=['atmos_monthly'], time_avg=True)
+diag.add_field('damping', 'taus', files=['atmos_monthly'], time_avg=True)
+diag.add_field('damping', 'tdt_diss_gwd', files=['atmos_monthly'], time_avg=True)
+diag.add_field('damping', 'sgsmtn', files=['atmos_monthly'], time_avg=True)
+
+# Stratospheric nudging tendency diagnostic
+diag.add_field('dynamics', 'udt_nudge', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+
+# Coordinate and pressure variables
 diag.add_field('dynamics', 'ps', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 diag.add_field('dynamics', 'bk', files=['atmos_monthly', 'atmos_daily'])
 diag.add_field('dynamics', 'pk', files=['atmos_monthly', 'atmos_daily'])
 
-# Daily and monthly 3D winds and temperature (ucomp, vcomp, temp)
+# Daily and monthly 3D winds, temperature, geopotential height, and surface height
 diag.add_field('dynamics', 'ucomp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 diag.add_field('dynamics', 'vcomp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 diag.add_field('dynamics', 'temp', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'height', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'zsurf', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'sphum', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+
 exp.diag_table = diag
+
+run_days = args.days if args.days is not None else 30
 
 exp.namelist = namelist = Namelist({
     'main_nml': {
-        'days': 30,
+        'days': run_days,
         'hours': 0,
         'minutes': 0,
         'seconds': 0,
-        'dt_atmos': 500,
+        'dt_atmos': 180,
         'current_date': [1, 1, 1, 0, 0, 0],
-        'calendar': 'thirty_day'
+        'calendar': 'thirty_day',
     },
 
     'idealized_moist_phys_nml': {
         'do_damping': True,
-        'turb': True,
         'mixed_layer_bc': True,
-        'do_virtual': False,
-        'do_simple': True,
-        'roughness_mom': 3.21e-05,
-        'roughness_heat': 3.21e-05,
-        'roughness_moist': 3.21e-05,
-        'two_stream_gray': False,       # Use RRTM, not grey radiation
+        'do_bm': True,
+        'bm_conserve_energy': True,
+        'do_lw': False,
+        'do_gray_radiation': False,
         'do_rrtm_radiation': True,
-        'convection_scheme': 'FULL_BETTS_MILLER'
-    },
-
-    'vert_turb_driver_nml': {
-        'do_mellor_yamada': False,
-        'do_diffusivity': True,
-        'do_simple': True,
-        'constant_gust': 0.0,
-        'use_tau': False
-    },
-
-    'diffusivity_nml': {
-        'do_entrain': False,
-        'do_simple': True,
     },
 
     'surface_flux_nml': {
-        'use_virtual_temp': False,
-        'do_simple': True,
-        'old_dtaudv': True
-    },
-
-    'atmosphere_nml': {
-        'idealized_moist_model': True
+        'use_virtual_temp': True,
+        'land_sea_roughness_contrast': True,
+        'roughness_choice': 4,
     },
 
     'mixed_layer_nml': {
-        'tconst': 285.,
-        'prescribe_initial_dist': True,
-        'evaporation': True,
-        'depth': 100.,
-        'albedo_value': 0.23,
+        'albedo_value': 0.38,
         'do_qflux': True,
-        'do_warmpool': True,
-    },
-
-    'qflux_nml': {
-        'qflux_amp': 26.,
-        'warmpool_localization_choice': 3,
-        'warmpool_k': 1.66666,
-        'warmpool_amp': 18.,
-        'warmpool_width': 35.,
-        'qflux_width': 16.,
-        'warmpool_phase': 140.,
-        'warmpool_centr': 0.,
-        'gulf_k': 4,
-        'gulf_amp': 70.,
-        'kuroshio_amp': 40.,
-        'trop_atlantic_amp': 50.,
-        'gulf_phase': 310.,
-        'Hawaiiextra': 30.0,
-        'Pac_ITCZextra': 0.0,
-        'north_sea_heat': 0.0,
+        'load_qflux': False,
+        'qflux_amp': 30.0,
+        'qflux_width': 16.0,
+        'land_sea_albedo_contrast': True,
+        'albedo_choice': 7,
+        'land_sea_heat_capacity_contrast': True,
+        'heat_capacity_choice': 1,
+        'depth': 2.5,
     },
 
     'betts_miller_nml': {
-        'tau_bm': 7200.,
-        'rhbm': .7,
+        'rhbm': 0.7,
         'do_simp': False,
         'do_shallower': True,
-        'do_changeqref': False,
-        'do_envsat': False,
-        'do_taucape': False,
-        'capetaubm': 900.,
-        'tau_min': 2400.,
-    },
-
-    'lscale_cond_nml': {
-        'do_simple': True,
-        'do_evap': True
-    },
-
-    'sat_vapor_pres_nml': {
-        'do_simple': True
     },
 
     'damping_driver_nml': {
-        'do_rayleigh': False,       # off, so cg_drag is the only source of GWD forcing
-        'trayfric': -0.5,
-        'sponge_pbottom': 50.,
-        'do_conserve_energy': True,
-        'do_mg_drag': False,
         'do_cg_drag': True,
+        'do_mg_drag': True,
+        'do_rayleigh': False,
+    },
+
+    'mg_drag_nml': {
+        'do_mconv': False,
+        'do_block': True,
+        'do_wave': True,
+        'gflux_fac': 0.125,
+        'gflux_fac_front': 0.0,
+        'crit_frac': 0.375,
+        'block_fac': 0.5,
+        'cg_drag_freq': 21600,
+        'source_level_pressure': 315.e+02,
+        'tau_min': 1.e-05,
+        'efac': 1.0,
     },
 
     'cg_drag_nml': {
-        'Bt_0': 0.0043,
-        'Bt_nh': 0.0,
+        'Bt_nh': 0.0010,
+        'phi0n': 25.0,
+        'dphin': 10.0,
         'Bt_eq': 0.0043,
         'Bt_sh': 0.0,
-        'phi0n': 15.,
         'phi0s': -15.,
-        'dphin': 10.,
         'dphis': -10.,
         'flag': 0,
         'Bw': 0.4,
@@ -198,7 +219,7 @@ exp.namelist = namelist = Namelist({
 
     'rrtm_radiation_nml': {
         'do_read_ozone': True,
-        'ozone_file': 'ozone_1990',
+        'ozone_file': ozone_file_name,
         'solr_cnst': 1370.,
         'dt_rad': 4500,
         'do_read_co2': False,
@@ -232,19 +253,86 @@ exp.namelist = namelist = Namelist({
         'vert_advect_uv': 'second_centered',
         'vert_advect_t': 'second_centered',
         'robert_coeff': 0.03,
-        # Stratospheric nudging options (SNAPSI protocol):
+        'ocean_topog_smoothing': 0.995,
+
+        # =========================================================================
+        # STRATOSPHERIC NUDGING CONFIGURATION (spectral_dynamics.F90)
+        # =========================================================================
+        # 1. Master enable switch:
         'do_strat_nudging': True,
-        'nudging_u_val': 10.0,       # Relax zonal wind towards 10 m/s everywhere
-        'nudging_tau': 21600.0,      # 6 hour relaxation timescale in seconds
-        'nudging_p_bottom': 90.0e2,  # Bottom pressure where nudging ramps up from 0 (90 hPa)
-        'nudging_p_top': 50.0e2,     # Top pressure where nudging reaches full strength (50 hPa)
+
+        # 2. Target forcing profile specification:
+        #    - True: read spatially and temporally varying u from external NetCDF file
+        #    - False: relax towards spatially uniform constant value 'nudging_u_val'
+        'nudge_u_from_file': True,
+        'nudge_u_file': 'INPUT/u_target_yr23.nc',
+        'nudge_u_varname': 'ucomp',
+        'nudge_u_time_offset_days': 0.0,
+
+        # 3. Relaxation timescale tau in seconds (e.g. 21600.0 s = 6 hours)
+        'nudging_tau': 21600.0,
+
+        # 4. Vertical transition boundaries (Pa):
+        #    Nudging is zero below nudging_p_bottom, transitions smoothly via a cubic
+        #    Hermite polynomial ramp between nudging_p_bottom and nudging_p_top, and
+        #    reaches full strength above nudging_p_top.
+        'nudging_p_bottom': 90.0e2,  # 90 hPa (lower transition boundary)
+        'nudging_p_top': 50.0e2,     # 50 hPa (full strength boundary)
+
+        # -------------------------------------------------------------------------
+        # 5. Zonal Wavenumber Filtering Options:
+        # -------------------------------------------------------------------------
+        # Default: Zonal-Mean Nudging only (wavenumber s = 0)
+        #   Relaxes only the zonal-mean wind [u] towards the reference profile,
+        #   leaving all non-zonal eddy departures (s >= 1) completely unconstrained.
+        'nudge_wave_min': 0,
+        'nudge_wave_max': 0,
+
+        # Alternative A: Zonal-Mean + Planetary Waves 1 and 2 (s in {0, 1, 2})
+        #   Nudges the mean flow and the longest planetary wave components.
+        #   To enable, set:
+        #   'nudge_wave_min': 0,
+        #   'nudge_wave_max': 2,
+
+        # Alternative B: Full-Field / Gridpoint Nudging (all wavenumbers)
+        #   Setting nudge_wave_max = -1 disables wavenumber filtering and applies
+        #   relaxation across the full 3D gridpoint wind field.
+        #   To enable, set:
+        #   'nudge_wave_min': 0,
+        #   'nudge_wave_max': -1,
+
+        # Alternative C: Explicit arbitrary list of wavenumbers
+        #   Allows nudging specific non-contiguous wavenumbers (e.g., s=0 and s=2 only):
+        #   To enable, set:
+        #   'nudge_wave_list': [0, 2],
     }
 })
 
 exp.set_resolution(*RESOLUTION)
 
+PLEVELS = [
+    100000, 92500, 85000, 70000, 60000, 50000, 40000, 30000, 25000, 20000,
+    15000, 10000, 7000, 5000, 3000, 2000, 1000, 700, 500, 300, 200, 100, 50, 20, 10
+]
+
+def interpolate_to_pressure_levels(experiment, num_months, p_levs=PLEVELS, files=['atmos_monthly', 'atmos_daily']):
+    for m in range(1, num_months + 1):
+        outdir = experiment.get_outputdir(m)
+        for fname in files:
+            infile = os.path.join(outdir, f'{fname}.nc')
+            outfile = os.path.join(outdir, f'plev_{fname}.nc')
+            if os.path.exists(infile):
+                print(f"Interpolating {infile} -> {outfile} onto pressure levels...")
+                try:
+                    interpolate_output(infile, outfile, all_fields=True, p_levs=p_levs, var_names=['slp', 'height'])
+                except Exception as e:
+                    print(f"Warning: pressure level interpolation failed for {fname}: {e}")
+
 if __name__ == '__main__':
     cb.compile()
-    exp.run(1, use_restart=False, num_cores=NCORES)
+    exp.run(1, use_restart=False, num_cores=NCORES, overwrite_data=True)
     for i in range(2, NUM_MONTHS + 1):
         exp.run(i, num_cores=NCORES)
+
+    interpolate_to_pressure_levels(exp, NUM_MONTHS, p_levs=PLEVELS)
+    print(f"\nSUCCESS: Stratospheric nudging test case completed ({NUM_MONTHS} month(s), {run_days} days)!\n")

@@ -1,19 +1,10 @@
 # List of test cases with paper references:
 
-`MiMA`
-* CNTL case of the MiMA model described in <https://doi.org/10.1175/JCLI-D-17-0127.1>
-
-`mima_qflux`
-* MiMA configuration with convective gravity wave drag (cg_drag) and analytic Q-fluxes, following the control simulation setup in Ning et al. (2026, <https://wcd.copernicus.org/articles/7/277/2026/>) and Garfinkel et al. (2020, <https://doi.org/10.1029/2019MS001925>).
-
 `strat_nudging`
-* Stratospheric nudging test case based on MiMA configuration with relaxation towards a uniform zonal wind (e.g. 10 m/s) following the SNAPSI protocol (Hitchcock et al. 2022, <https://gmd.copernicus.org/articles/15/5073/2022/>).
-
-`strat_nudging_from_file`
-* Stratospheric nudging test case relaxing towards a 3D time-evolving zonal wind field read from an external NetCDF file, with linear interpolation in time at every model time step, following the SNAPSI vertical profile and relaxation timescale.
-
-`mima_ning_strat_nudging`
-* Comprehensive MiMA configuration replicating the experimental setup of Ning et al. (2026, <https://wcd.copernicus.org/articles/7/277/2026/>) and White et al. (2022, <https://journals.ametsoc.org/view/journals/atsc/79/8/JAS-D-21-0237.1.xml>), including 1/6° realistic topography with ocean smoothing, interpolated land-sea mask, land-sea heat capacity contrast ($10^7$ vs $1-3\times 10^8\ \mathrm{J\,m^{-2}\,K^{-1}}$), realistic surface albedo with polar ice caps and desert albedos, enhanced land momentum and moisture roughness, convective gravity wave drag, analytic Q-fluxes, and stratospheric zonal wind nudging towards an external NetCDF file following the SNAPSI protocol.
+* Stratospheric dynamics and nudging test cases based on MiMA (Model of an idealized Moist Atmosphere) with realistic topography, time-varying CMIP5 ozone, orographic gravity wave drag (Pierrehumbert & Stern 1987), and extratropical non-orographic gravity wave drag (`exp/test_cases/strat_nudging/`):
+  * `strat_free_test_case.py`: Free-running MiMA-like configuration incorporating Orographic GWD (`mg_drag`), enhanced extratropical non-orographic GWD in the Northern Hemisphere (`Bt_nh = 0.0010 Pa`, `phi0n = 25.0° N`, `dphin = 10.0°`) to eliminate the stratospheric polar vortex cold pole bias, and time-varying CMIP5 ozone.
+  * `strat_nudging_test_case.py`: Stratospheric nudging configuration based on `strat_free`, supporting flexible wavenumber-selective or full-field zonal wind ($u$) nudging towards an externally supplied NetCDF target (defaulting to zonal-mean nudging $s=0$ using `input/u_target_yr23.nc`).
+  * See `exp/test_cases/strat_nudging/README.md` for a comprehensive guide to namelist options and the Fortran nudging implementation in `src/atmos_spectral/model/spectral_dynamics.F90`.
 
 `cg_drag`
 * Non-orographic (convective) gravity wave drag test case (Alexander & Dunkerton 1999, JAS).
