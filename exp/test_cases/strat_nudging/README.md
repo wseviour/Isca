@@ -8,7 +8,7 @@ This directory contains reference test cases for the Model of an idealized Moist
 
 | Test Case Script | Purpose | Key Distinguishing Features |
 | :--- | :--- | :--- |
-| **`strat_free_test_case.py`** | Free-running control simulation | MiMA with Ning & MG gravity wave drag, enhanced extratropical launch flux ($B_{t,\mathrm{nh}} = 0.0010\text{ Pa}$), CMIP5 seasonal ozone, realistic topography, and land-sea contrast. No relaxation. |
+| **`strat_free_test_case.py`** | Free-running control simulation | MiMA with Ning & MG gravity wave drag, enhanced extratropical launch flux ($`B_{t,\mathrm{nh}} = 0.0010\text{ Pa}`$), CMIP5 seasonal ozone, realistic topography, and land-sea contrast. No relaxation. |
 | **`strat_nudging_test_case.py`** | Stratospheric wind nudged simulation | Identical physical configuration to the free run, with stratospheric zonal wind ($u$) relaxed towards an external NetCDF target profile (`u_target_yr23.nc`) above $90\text{ hPa}$ using real-to-complex Fourier wavenumber filtering. Defaults to zonal-mean nudging ($s=0$). |
 
 Both test cases are configured at **T42 spectral horizontal resolution** with **40 uneven vertical sigma levels** extending from the surface up to $\sim 0.01\text{ hPa}$.
@@ -141,7 +141,7 @@ The stratospheric nudging framework is implemented in `src/atmos_spectral/model/
 During each dynamical timestep, before horizontal advection and spectral transforms:
 
 #### 1. Temporal Interpolation
-Model time is converted to days since origin ($t_\mathrm{eff} = \mathrm{dy} + \mathrm{sec}/86400.0 + \Delta t_\mathrm{offset}$). Bounding records $k_1, k_2$ are located and linearly interpolated:
+Model time is converted to days since origin ($`t_\mathrm{eff} = \mathrm{dy} + \mathrm{sec}/86400.0 + \Delta t_\mathrm{offset}`$). Bounding records $`k_1, k_2`$ are located and linearly interpolated:
 
 $$
 u_\mathrm{target}(t) = (1 - \alpha) u_\mathrm{target}(k_1) + \alpha u_\mathrm{target}(k_2), \quad \alpha = \frac{t_\mathrm{eff} - t_1}{t_2 - t_1}
@@ -150,7 +150,7 @@ $$
 Records are cached in memory and reloaded only when the simulation steps into a new target interval.
 
 #### 2. Wavenumber Filtering via Real-to-Complex FFT
-The model computes the raw wind difference $\Delta u(\lambda, \phi, p) = u_\mathrm{model} - u_\mathrm{target}$ and executes a 1D real-to-complex FFT (`rfftf`) along each latitude circle $\phi_j$:
+The model computes the raw wind difference $`\Delta u(\lambda, \phi, p) = u_\mathrm{model} - u_\mathrm{target}`$ and executes a 1D real-to-complex FFT (`rfftf`) along each latitude circle $`\phi_j`$:
 
 $$
 \hat{U}(s, \phi_j, p) = \mathcal{F}\{\Delta u(\lambda, \phi_j, p)\}, \quad s = 0, 1, \dots, N_\mathrm{lon}/2
@@ -165,7 +165,7 @@ $$
 \end{cases}
 $$
 
-where $\mathcal{S}_\mathrm{list}$ denotes the optional explicit wavenumber set defined in `nudge_wave_list`. The inverse FFT (`rfftb`) then reconstructs the filtered physical wind difference $\Delta u_\mathrm{filtered}(\lambda, \phi, p)$.
+where $`\mathcal{S}_\mathrm{list}`$ denotes the optional explicit wavenumber set defined in `nudge_wave_list`. The inverse FFT (`rfftb`) then reconstructs the filtered physical wind difference $`\Delta u_\mathrm{filtered}(\lambda, \phi, p)`$.
 
 #### 3. Vertical Hermite Transition Ramp
 To prevent spurious wave reflection and Gibbs oscillations at the lower nudging boundary, the relaxation weight $w(p)$ follows a smooth cubic Hermite polynomial:
