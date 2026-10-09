@@ -160,12 +160,12 @@ Any complex Fourier coefficient $\hat{U}(s)$ outside the target wavenumber set i
 
 $$
 \hat{U}_\mathrm{filtered}(s) = \begin{cases}
-\hat{U}(s) & \text{if } s \in [s_\mathrm{min}, s_\mathrm{max}] \text{ or } s \in \text{nudge\_wave\_list} \\
+\hat{U}(s) & \text{if } s \in [s_\mathrm{min}, s_\mathrm{max}] \text{ or } s \in \mathcal{S}_\mathrm{list} \\
 0 & \text{otherwise}
 \end{cases}
 $$
 
-The inverse FFT (`rfftb`) then reconstructs the filtered physical wind difference $\Delta u_\mathrm{filtered}(\lambda, \phi, p)$.
+where $\mathcal{S}_\mathrm{list}$ denotes the optional explicit wavenumber set defined in `nudge_wave_list`. The inverse FFT (`rfftb`) then reconstructs the filtered physical wind difference $\Delta u_\mathrm{filtered}(\lambda, \phi, p)$.
 
 #### 3. Vertical Hermite Transition Ramp
 To prevent spurious wave reflection and Gibbs oscillations at the lower nudging boundary, the relaxation weight $w(p)$ follows a smooth cubic Hermite polynomial:
