@@ -28,7 +28,7 @@ The model configuration incorporates key physical parameterizations developed to
 ### 2.2 Orographic Gravity Wave Drag (`mg_drag_nml`)
 * **Pierrehumbert & Stern (1987) mountain drag scheme**:
   * Driven by realistic subgrid-scale mountain height standard deviation (`sgsmtn`, stored in `input/mg_drag.res.nc`), derived from high-resolution topography datasets (ERA5 / Navy).
-  * Key parameters: `do_block = True` (low-level mountain blocking), `do_wave = True` (vertically propagating mountain waves), `crit_frac = 0.375`, `block_fac = 0.5`, `gflux_fac = 0.125`.
+  * Key parameters: `gmax = 1.0`, `acoef = 1.0`, `low_lev_frac = 0.23`, `xl_mtn = 100000.0`, `source_of_sgsmtn = 'input'`, `do_conserve_energy = True`.
 
 ### 2.3 Non-Orographic Gravity Wave Drag (`cg_drag_nml`)
 * **Alexander & Dunkerton (1999) convective wave drag scheme**:
@@ -43,43 +43,141 @@ The model configuration incorporates key physical parameterizations developed to
   * Reads monthly-varying, zonally symmetric CMIP5 ozone volume mixing ratios (`input/ozone_1990_cmip5.nc`).
   * Captures the seasonal cycle of stratospheric radiative heating, producing a realistic stratopause temperature inversion and summer-to-winter meridional temperature gradients.
 
+### 2.5 Prescribed Analytic Ocean Q-fluxes and Land-Sea Contrast (`qflux_nml` & `mixed_layer_nml`)
+
+In the idealized slab ocean framework (`mixed_layer_nml`, Frierson et al., 2006), ocean dynamics are not computed prognostically. Without prescribed ocean heat transport, tropical SSTs become excessively warm, extratropical SSTs become too cold, and Northern Hemisphere stationary waves are severely underrepresented.
+
+To produce a realistic mean climate, stationary wave field, and stratospheric polar vortex variability, the model prescribes analytic ocean heat flux convergences ($Q$-fluxes) via `src/atmos_param/qflux/qflux.f90` (`qflux_nml`) coupled to the slab mixed layer (`mixed_layer_nml`, with `do_qflux = True` and `do_warmpool = True`). This configuration follows the MiMA formulation developed across several foundational studies:
+
+#### 1. Zonally Symmetric Meridional Heat Transport (Merlis et al., 2013; Merlis & Schneider, 2010)
+Prescribes a smooth, zonally symmetric poleward ocean heat transport following Merlis et al. (2013, Part II, *J. Climate*):
+
+$$
+\mathcal{Q}_\mathrm{zonal}(\phi) = - Q_0 \left(1 - \frac{2\phi^2}{\phi_0^2}\right) \exp\left(-\frac{\phi^2}{\phi_0^2}\right) \frac{1}{\cos\phi}
+$$
+
+* **`qflux_amp = 26.0 W m^-2`** ($Q_0$): Peak amplitude of equatorial heat divergence and subtropical convergence.
+* **`qflux_width = 16.0°`** ($\phi_0$): Latitudinal width parameter governing the meridional scale of tropical heat divergence.
+* **Physics:** Diverts heat poleward from the deep tropics into the subtropics, preventing runaway equatorial warming and establishing realistic meridional SST gradients and Hadley circulation width.
+
+#### 2. Zonally Asymmetric Stationary Wave Forcing (Jucker & Gerber, 2017; Garfinkel et al., 2020; Ning et al., 2026)
+Planetary stationary waves in the Northern Hemisphere (particularly wavenumbers 1 and 2) are forced jointly by topography, land-sea thermal contrasts, and localized ocean heat sources. MiMA was first introduced with an idealized tropical warm pool by Jucker & Gerber (2017, *GMD*). Garfinkel et al. (2020, *JAMES*) and Ning et al. (2026, *WCD*) expanded this into a comprehensive 2D analytic $Q$-flux framework (`warmpool_localization_choice = 3`) that captures western boundary currents and localized SST dipoles:
+
+* **Indo-Pacific Warm Pool & Cold Tongue:**
+  * **`warmpool_amp = 18.0 W m^-2`**, **`warmpool_width = 35.0°`**, **`warmpool_phase = 140.0° E`**, **`warmpool_k = 1.66666`**:
+  * Concentrates heat convergence in the Western Pacific warm pool region ($140^\circ\text{E}$), balanced by heat divergence in the eastern equatorial Pacific cold tongue.
+* **Kuroshio Extension Current:**
+  * **`kuroshio_amp = 40.0 W m^-2`**:
+  * Represents localized ocean heat release by the warm Kuroshio Extension current in the northwest Pacific along $35^\circ\text{N}$, balanced by upstream and downstream cooling.
+* **Gulf Stream & North Atlantic Drift:**
+  * **`gulf_amp = 70.0 W m^-2`**, **`gulf_phase = 310.0° E`** ($50^\circ\text{W}$), **`gulf_k = 4`**:
+  * Represents intense ocean heat convergence along the western boundary of the North Atlantic off North America and Newfoundland ($37^\circ\text{N}$), feeding the North Atlantic storm track.
+* **Tropical Atlantic & Caribbean Dipoles:**
+  * **`trop_atlantic_amp = 50.0 W m^-2`**:
+  * Modulates heat convergence in the tropical Atlantic and Caribbean, compensating for continental boundaries.
+* **Regional Modulations:**
+  * **`hawaiiextra = 30.0 W m^-2`**: Modulates subtropical Pacific heat convergence and the South Pacific Convergence Zone (SPCZ).
+  * `pac_itczextra = 0.0`, `north_sea_heat = 0.0`: Additional regional tuning hooks in `qflux_mod`.
+
+#### 3. Mixed-Layer Thermal Properties (`mixed_layer_nml`)
+* **`heat_capacity = 3.0e8 J m^-2 K^-1`**: Ocean slab mixed-layer heat capacity, corresponding to an effective ocean mixed-layer depth of $\sim 75\text{ m}$ ($C_w = \rho_w c_w h \approx 1000 \times 4000 \times 75$).
+* **`land_capacity = 1.0e7 J m^-2 K^-1`**: Low land heat capacity ($\sim 2.5\text{ m}$ water equivalent), allowing continents to rapidly warm in summer and cool in winter, driving strong land-sea thermal contrasts.
+* **`trop_capacity = 1.0e8 J m^-2 K^-1`**, **`trop_cap_limit = 20.0°`**: Reduced tropical mixed-layer depth ($\sim 25\text{ m}$) within $20^\circ$ of the equator, capturing realistic tropical seasonal SST amplitude.
+* **`albedo_choice = 7`**: Surface and latitude-dependent albedo (`const_albedo = 0.23`, `higher_albedo = 0.8`, `albedo_cntrnh = 68.0° N`, `albedo_cntrsh = 64.0° S`, `albedo_wdth = 5.0°`, `lat_glacier = -70.0° S`).
+
 ---
 
-## 3. Stratospheric Nudging Namelist Reference
+## 3. Stratospheric Nudging Python Configuration Reference
 
-Stratospheric nudging is configured in `spectral_dynamics_nml` within the model namelist:
+Stratospheric nudging is configured in Python within `spectral_dynamics_nml` in the experiment file (`strat_nudging_test_case.py`):
 
-```fortran
-&spectral_dynamics_nml
-  do_strat_nudging         = .true.,              ! Master switch to enable stratospheric nudging
-  nudge_u_from_file        = .true.,              ! Read target profile from NetCDF (.true.) or use constant (.false.)
-  nudge_u_file             = 'INPUT/u_target_yr23.nc', ! Path to NetCDF target file
-  nudge_u_varname          = 'ucomp',             ! Variable name in NetCDF file
-  nudge_u_time_offset_days = 0.0,                 ! Time offset in days between model and file calendars
-  nudging_tau              = 21600.0,             ! Relaxation timescale in seconds (21600 s = 6 hours)
-  nudging_p_bottom         = 90.0e2,              ! Lower transition boundary in Pa (90 hPa)
-  nudging_p_top            = 50.0e2,              ! Full strength boundary in Pa (50 hPa)
-  nudge_wave_min           = 0,                   ! Minimum zonal wavenumber to nudge
-  nudge_wave_max           = 0,                   ! Maximum zonal wavenumber to nudge (-1 disables filtering)
-  nudge_wave_list          = -1,                  ! Optional explicit array of wavenumbers to nudge
-/
+```python
+    'spectral_dynamics_nml': {
+        # Standard dynamical core parameters:
+        'damping_order': 4,
+        'water_correction_limit': 20000.0,
+        'reference_sea_level_press': 100000.0,
+        'num_levels': 40,
+        'valid_range_t': [100.0, 800.0],
+        'initial_sphum': 2e-06,
+        'vert_coord_option': 'uneven_sigma',
+        'surf_res': 0.1,
+        'scale_heights': 7.9,
+        'exponent': 1.4,
+        'vert_advect_uv': 'second_centered',
+        'vert_advect_t': 'second_centered',
+        'robert_coeff': 0.03,
+        'ocean_topog_smoothing': 0.995,
+
+        # =========================================================================
+        # STRATOSPHERIC NUDGING CONFIGURATION (spectral_dynamics.F90)
+        # =========================================================================
+        # 1. Master enable switch:
+        'do_strat_nudging': True,
+
+        # 2. Variables to nudge:
+        #    Accepts list containing: 'ucomp', 'vcomp', 'temp'
+        #    - Default: ['ucomp'] (nudging zonal wind towards u_target_yr23.nc)
+        #    - Following SNAPSI protocol (Hitchcock et al., 2022):
+        #      * Zonal-mean nudging (s = 0): ['ucomp', 'temp']
+        #      * Multi-wavenumber / full nudging: ['ucomp', 'vcomp', 'temp']
+        'nudge_vars': ['ucomp'],
+
+        # 3. Target forcing profile specifications:
+        'nudge_u_from_file': True,
+        'nudge_u_file': 'INPUT/u_target_yr23.nc',
+        'nudge_u_varname': 'ucomp',
+        'nudge_u_time_offset_days': 0.0,
+
+        'nudge_v_from_file': True,                  # Optional: read target vcomp from NetCDF
+        'nudge_v_file': 'INPUT/v_target_yr23.nc',
+        'nudge_v_varname': 'vcomp',
+        'nudge_v_time_offset_days': 0.0,
+
+        'nudge_t_from_file': True,                  # Optional: read target temp from NetCDF
+        'nudge_t_file': 'INPUT/t_target_yr23.nc',
+        'nudge_t_varname': 'temp',
+        'nudge_t_time_offset_days': 0.0,
+
+        # 4. Relaxation timescale tau in seconds (e.g. 21600.0 s = 6 hours):
+        'nudging_tau': 21600.0,
+
+        # 5. Vertical transition boundaries (Pa):
+        #    Nudging is zero below nudging_p_bottom, transitions smoothly via a cubic
+        #    Hermite polynomial ramp between nudging_p_bottom and nudging_p_top, and
+        #    reaches full strength above nudging_p_top.
+        'nudging_p_bottom': 90.0e2,  # 90 hPa (lower transition boundary)
+        'nudging_p_top': 50.0e2,     # 50 hPa (full strength boundary)
+
+        # 6. Zonal Wavenumber Filtering Options:
+        # Default: Zonal-Mean Nudging only (wavenumber s = 0)
+        'nudge_wave_min': 0,
+        'nudge_wave_max': 0,
+
+        # Optional explicit list of wavenumbers:
+        # 'nudge_wave_list': [0, 2],
+    }
 ```
 
 ### Parameter Details:
 
 | Parameter | Type | Default | Description |
 | :--- | :---: | :---: | :--- |
-| `do_strat_nudging` | `logical` | `.false.` | Enables stratospheric relaxation towards target $u$. |
-| `nudge_u_from_file` | `logical` | `.false.` | When `.true.`, reads time-dependent 3D target wind from NetCDF. When `.false.`, nudges toward spatially uniform scalar `nudging_u_val`. |
-| `nudge_u_file` | `character` | `''` | Relative path to target NetCDF file inside the run directory (e.g., `'INPUT/u_target_yr23.nc'`). |
-| `nudge_u_varname` | `character` | `'ucomp'` | Variable name for zonal wind inside the NetCDF file. |
-| `nudge_u_time_offset_days` | `real` | `0.0` | Calendar offset added to model time when reading target records. |
-| `nudging_tau` | `real` | `21600.0` | Newtonian relaxation timescale $\tau$ in seconds ($21600\text{ s} = 6\text{ h}$, $86400\text{ s} = 24\text{ h}$). |
-| `nudging_p_bottom` | `real` | `9000.0` | Lower pressure limit ($90\text{ hPa}$) below which nudging tendency is identically zero. |
-| `nudging_p_top` | `real` | `5000.0` | Pressure level ($50\text{ hPa}$) above which nudging reaches $100\%$ full strength ($1/\tau$). |
-| `nudge_wave_min` | `integer` | `0` | Smallest zonal wavenumber to retain in the nudging tendency. |
-| `nudge_wave_max` | `integer` | `-1` | Largest zonal wavenumber to retain. When `nudge_wave_max < 0`, wavenumber filtering is disabled and all gridpoints are relaxed. |
-| `nudge_wave_list` | `integer(50)` | `-1` | Explicit integer array specifying arbitrary wavenumbers to nudge (overrides min/max range when `nudge_wave_list(1) >= 0`). |
+| `do_strat_nudging` | `bool` | `False` | Enables stratospheric relaxation towards target fields. |
+| `nudge_vars` | `list[str]` | `['ucomp']` | List of variables to nudge: `'ucomp'`, `'vcomp'`, `'temp'`. Following SNAPSI, zonal-mean nudging typically uses `['ucomp', 'temp']`, while multi-wavenumber or full nudging uses `['ucomp', 'vcomp', 'temp']`. |
+| `nudge_u_from_file` | `bool` | `False` | When `True`, reads time-dependent 3D target wind from NetCDF. When `False`, nudges toward spatially uniform scalar `nudging_u_val`. |
+| `nudge_u_file` | `str` | `'INPUT/u_target.nc'` | Relative path to target NetCDF file inside the run directory. |
+| `nudge_u_varname` | `str` | `'ucomp'` | Variable name for zonal wind inside the NetCDF file. |
+| `nudge_v_file` | `str` | `''` | NetCDF file for `vcomp`. If empty, defaults to `nudge_u_file`. |
+| `nudge_v_varname` | `str` | `'vcomp'` | Variable name for meridional wind inside the NetCDF file. |
+| `nudge_t_file` | `str` | `''` | NetCDF file for `temp`. If empty, defaults to `nudge_u_file`. |
+| `nudge_t_varname` | `str` | `'temp'` | Variable name for temperature inside the NetCDF file. |
+| `nudging_tau` | `float` | `21600.0` | Newtonian relaxation timescale $\tau$ in seconds ($21600\text{ s} = 6\text{ h}$, $86400\text{ s} = 24\text{ h}$). |
+| `nudging_p_bottom` | `float` | `9000.0` | Lower pressure limit ($90\text{ hPa}$) below which nudging tendency is identically zero. |
+| `nudging_p_top` | `float` | `5000.0` | Pressure level ($50\text{ hPa}$) above which nudging reaches $100\%$ full strength ($1/\tau$). |
+| `nudge_wave_min` | `int` | `0` | Smallest zonal wavenumber to retain in the nudging tendency. |
+| `nudge_wave_max` | `int` | `-1` | Largest zonal wavenumber to retain. When `nudge_wave_max < 0`, wavenumber filtering is disabled and all gridpoints are relaxed. |
+| `nudge_wave_list` | `list[int]` | `[-1]` | Explicit integer array specifying arbitrary wavenumbers to nudge (overrides min/max range when `nudge_wave_list[0] >= 0`). |
 
 ---
 

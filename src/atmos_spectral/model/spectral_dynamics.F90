@@ -112,7 +112,7 @@ character(len=128), parameter :: tagname = '$Name: siena_201211 $'
 integer :: id_ps, id_u, id_v, id_t, id_vor, id_div, id_omega, id_wspd, id_slp
 integer :: id_pres_full, id_pres_half, id_zfull, id_zhalf, id_vort_norm, id_EKE
 integer :: id_uu, id_vv, id_tt, id_omega_omega, id_uv, id_omega_t, id_vw, id_uw, id_ut, id_vt, id_v_vor, id_uz, id_vz, id_omega_z
-integer :: id_u_nudge = 0
+integer :: id_u_nudge = 0, id_v_nudge = 0, id_t_nudge = 0
 integer, allocatable, dimension(:) :: id_tr, id_utr, id_vtr, id_wtr !extra advection diags added by RG
 real :: gamma, expf, expf_inverse
 character(len=8) :: mod_name = 'dynamics'
@@ -139,13 +139,28 @@ real, allocatable, dimension(:,:,:,:  ) :: ug, vg, tg        ! last dimension is
 real, allocatable, dimension(:,:,:,:,:) :: grid_tracers      ! 4'th dimension is for time level, last dimension is for tracer number
 real, allocatable, dimension(:,:      ) :: surf_geopotential
 real, allocatable, dimension(:,:,:    ) :: vorg, divg        ! no time levels needed
-real, allocatable, dimension(:,:,:    ) :: nudging_u_dt      ! stratospheric nudging tendency for diagnostics
-real, allocatable, dimension(:        ) :: nudge_u_times     ! time coordinates of nudging records (days)
-integer                                 :: num_nudge_times = 0
-real, allocatable, dimension(:,:,:    ) :: u_target_m, u_target_p ! cached bounding records on local PE
-integer                                 :: rec_loaded_m = -1, rec_loaded_p = -1
+type :: nudge_field_type
+  character(len=32) :: name = ''
+  character(len=256) :: file = ''
+  character(len=64) :: varname = ''
+  logical :: from_file = .false.
+  real :: const_val = 0.0
+  real :: time_offset = 0.0
+  real, allocatable, dimension(:) :: times
+  integer :: num_times = 0
+  integer :: rec_loaded_m = -1
+  integer :: rec_loaded_p = -1
+  real, allocatable, dimension(:,:,:) :: target_m
+  real, allocatable, dimension(:,:,:) :: target_p
+  logical :: is_active = .false.
+end type nudge_field_type
+
+type(nudge_field_type) :: nudge_field_u, nudge_field_v, nudge_field_t
+real, allocatable, dimension(:,:,:    ) :: nudging_u_dt      ! zonal wind nudging tendency (m/s^2)
+real, allocatable, dimension(:,:,:    ) :: nudging_v_dt      ! meridional wind nudging tendency (m/s^2)
+real, allocatable, dimension(:,:,:    ) :: nudging_t_dt      ! temperature nudging tendency (K/s)
 logical                                 :: do_nudge_wave_filter = .false.
-real, allocatable, dimension(:,:,:    ) :: nudge_diff_u      ! working array for wavenumber filtering
+real, allocatable, dimension(:,:,:    ) :: nudge_diff        ! working array for wavenumber filtering
 complex, allocatable, dimension(:,:,: ) :: nudge_fourier_diff ! complex Fourier coefficients for filtering
 
 integer, allocatable, dimension(:) :: tracer_vert_advect_scheme
@@ -173,7 +188,9 @@ logical :: do_mass_correction     = .true. , &
            make_symmetric         = .false., & !GC/RG Add namelist option to run model as zonally symmetric
            do_spec_tracer_filter  = .false., &
            do_strat_nudging       = .false., & ! Relax stratospheric winds towards target profile/value
-           nudge_u_from_file      = .false.    ! Read target zonal wind from external NetCDF file
+           nudge_u_from_file      = .false., & ! Read target zonal wind from external NetCDF file
+           nudge_v_from_file      = .false., & ! Read target meridional wind from external NetCDF file
+           nudge_t_from_file      = .false.    ! Read target temperature from external NetCDF file
 
 
 integer :: damping_order       = 2, &
@@ -200,9 +217,18 @@ character(len=64) :: vert_coord_option      = 'even_sigma',   &
                      vert_difference_option = 'simmons_and_burridge', &
                      initial_state_option   = 'quiescent'
 
-character(len=256) :: nudge_u_file    = 'INPUT/u_target.nc'  ! Path/filename of NetCDF file for nudging
-character(len=64)  :: nudge_u_varname = 'ucomp'              ! NetCDF variable name for target u
-real               :: nudge_u_time_offset_days = 0.0          ! Time offset added to model time (days)
+character(len=32), dimension(10) :: nudge_vars = ''   ! Variables to nudge: 'ucomp', 'vcomp', 'temp'
+character(len=256) :: nudge_u_file    = 'INPUT/u_target.nc'  ! Path/filename of NetCDF file for nudging ucomp
+character(len=64)  :: nudge_u_varname = 'ucomp'              ! NetCDF variable name for target ucomp
+real               :: nudge_u_time_offset_days = 0.0          ! Time offset added to model time for ucomp (days)
+
+character(len=256) :: nudge_v_file    = ''                   ! NetCDF file for vcomp (if empty, defaults to nudge_u_file)
+character(len=64)  :: nudge_v_varname = 'vcomp'              ! NetCDF variable name for target vcomp
+real               :: nudge_v_time_offset_days = 0.0          ! Time offset added to model time for vcomp (days)
+
+character(len=256) :: nudge_t_file    = ''                   ! NetCDF file for temp (if empty, defaults to nudge_u_file)
+character(len=64)  :: nudge_t_varname = 'temp'               ! NetCDF variable name for target temp
+real               :: nudge_t_time_offset_days = 0.0          ! Time offset added to model time for temp (days)
 
 real    :: damping_coeff       = 1.15740741e-4, & ! (one tenth day)**-1
            damping_coeff_vor   = -1., &
@@ -224,6 +250,8 @@ real    :: damping_coeff       = 1.15740741e-4, & ! (one tenth day)**-1
          water_correction_limit = 0.0, & !mj
            raw_filter_coeff    = 1.0, &  !st Default value of 1.0 turns the RAW part of the filtering off. 0.5 is the desired value, but this appears unstable. Requires further testing.
            nudging_u_val       = 10.0,    & ! Target zonal wind for stratospheric nudging (m/s)
+           nudging_v_val       = 0.0,     & ! Target meridional wind for stratospheric nudging (m/s)
+           nudging_t_val       = 200.0,   & ! Target temperature for stratospheric nudging (K)
            nudging_tau         = 21600.0, & ! Stratospheric nudging relaxation timescale (seconds, default 6 hours)
            nudging_p_bottom    = 90.0e2,  & ! Bottom pressure where nudging ramps from 0 (Pa, default 90 hPa)
            nudging_p_top       = 50.0e2     ! Top pressure where nudging reaches full strength (Pa, default 50 hPa)
@@ -251,10 +279,15 @@ namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff
                                  graceful_shutdown,                                                  &
                                  make_symmetric,                                                     & !GC/RG add make_symmetric option
                                  do_spec_tracer_filter,                                              &
-                                 do_strat_nudging, nudging_u_val, nudging_tau,                       &
-                                 nudging_p_bottom, nudging_p_top,                                    &
+                                 do_strat_nudging, nudging_u_val, nudging_v_val, nudging_t_val,      &
+                                 nudging_tau, nudging_p_bottom, nudging_p_top,                       &
+                                 nudge_vars,                                                         &
                                  nudge_u_from_file, nudge_u_file, nudge_u_varname,                   &
                                  nudge_u_time_offset_days,                                           &
+                                 nudge_v_from_file, nudge_v_file, nudge_v_varname,                   &
+                                 nudge_v_time_offset_days,                                           &
+                                 nudge_t_from_file, nudge_t_file, nudge_t_varname,                   &
+                                 nudge_t_time_offset_days,                                           &
                                  nudge_wave_min, nudge_wave_max, nudge_wave_list
 
 contains
@@ -699,8 +732,18 @@ ln_ps=cmplx(0.,0.); vors=cmplx(0.,0.); divs=cmplx(0.,0.); ts=cmplx(0.,0.); spec_
 pk=0.; bk=0.; vorg=0.; divg=0.; surf_geopotential=0.; grid_tracers=0.
 
 if (do_strat_nudging) then
-  allocate (nudging_u_dt(is:ie, js:je, num_levels))
-  nudging_u_dt = 0.
+  if (nudge_field_u%is_active) then
+    allocate (nudging_u_dt(is:ie, js:je, num_levels))
+    nudging_u_dt = 0.
+  endif
+  if (nudge_field_v%is_active) then
+    allocate (nudging_v_dt(is:ie, js:je, num_levels))
+    nudging_v_dt = 0.
+  endif
+  if (nudge_field_t%is_active) then
+    allocate (nudging_t_dt(is:ie, js:je, num_levels))
+    nudging_t_dt = 0.
+  endif
 endif
 
 return
@@ -711,6 +754,8 @@ subroutine check_dynamics_nml
 character(len=8)  :: ch_tmp1
 character(len=16) :: ch_tmp2
 integer :: itmp
+character(len=32) :: var_str
+integer :: iv
 
 !  Check for invalid values and incompatible combinations of namelist variables
 
@@ -800,9 +845,6 @@ if (do_strat_nudging) then
   if (nudging_p_bottom <= nudging_p_top .or. nudging_p_top <= 0.0) then
     call error_mesg('check_dynamics_nml', 'nudging_p_bottom must be greater than nudging_p_top > 0', FATAL)
   endif
-  if (nudge_u_from_file .and. trim(nudge_u_file) == '') then
-    call error_mesg('check_dynamics_nml', 'nudge_u_file must not be empty when nudge_u_from_file=.true.', FATAL)
-  endif
   if (nudge_wave_min < 0) then
     call error_mesg('check_dynamics_nml', 'nudge_wave_min must be >= 0', FATAL)
   endif
@@ -811,6 +853,93 @@ if (do_strat_nudging) then
   endif
   if (nudge_wave_max > lon_max/2) then
     call error_mesg('check_dynamics_nml', 'nudge_wave_max cannot exceed lon_max/2', FATAL)
+  endif
+
+  ! Initialize field names
+  nudge_field_u%name = 'ucomp'
+  nudge_field_v%name = 'vcomp'
+  nudge_field_t%name = 'temp'
+
+  ! If nudge_vars is empty, default to ucomp for backward compatibility
+  if (trim(nudge_vars(1)) == '' .or. trim(lowercase(nudge_vars(1))) == 'none') then
+    nudge_vars(1) = 'ucomp'
+  endif
+
+  ! Parse nudge_vars array (accepts ucomp, vcomp, temp)
+  do iv = 1, size(nudge_vars)
+    var_str = trim(lowercase(nudge_vars(iv)))
+    if (var_str == '') cycle
+    select case (trim(var_str))
+    case ('ucomp')
+      nudge_field_u%is_active = .true.
+    case ('vcomp')
+      nudge_field_v%is_active = .true.
+    case ('temp')
+      nudge_field_t%is_active = .true.
+    case default
+      call error_mesg('check_dynamics_nml', &
+           'Unknown variable in nudge_vars: "'//trim(var_str)//'". Must be one of: ucomp, vcomp, temp', FATAL)
+    end select
+  enddo
+
+  ! Setup ucomp field
+  nudge_field_u%file = nudge_u_file
+  nudge_field_u%varname = nudge_u_varname
+  nudge_field_u%from_file = nudge_u_from_file
+  nudge_field_u%const_val = nudging_u_val
+  nudge_field_u%time_offset = nudge_u_time_offset_days
+
+  ! Setup vcomp field
+  if (trim(nudge_v_file) == '') then
+    nudge_field_v%file = nudge_u_file
+  else
+    nudge_field_v%file = nudge_v_file
+  endif
+  nudge_field_v%varname = nudge_v_varname
+  if (nudge_v_from_file) then
+    nudge_field_v%from_file = .true.
+  else if (nudge_u_from_file .and. nudge_field_v%is_active) then
+    nudge_field_v%from_file = .true.
+  else
+    nudge_field_v%from_file = .false.
+  endif
+  nudge_field_v%const_val = nudging_v_val
+  if (nudge_v_time_offset_days /= 0.0) then
+    nudge_field_v%time_offset = nudge_v_time_offset_days
+  else
+    nudge_field_v%time_offset = nudge_u_time_offset_days
+  endif
+
+  ! Setup temp field
+  if (trim(nudge_t_file) == '') then
+    nudge_field_t%file = nudge_u_file
+  else
+    nudge_field_t%file = nudge_t_file
+  endif
+  nudge_field_t%varname = nudge_t_varname
+  if (nudge_t_from_file) then
+    nudge_field_t%from_file = .true.
+  else if (nudge_u_from_file .and. nudge_field_t%is_active) then
+    nudge_field_t%from_file = .true.
+  else
+    nudge_field_t%from_file = .false.
+  endif
+  nudge_field_t%const_val = nudging_t_val
+  if (nudge_t_time_offset_days /= 0.0) then
+    nudge_field_t%time_offset = nudge_t_time_offset_days
+  else
+    nudge_field_t%time_offset = nudge_u_time_offset_days
+  endif
+
+  ! File existence checks for active fields
+  if (nudge_field_u%is_active .and. nudge_field_u%from_file .and. trim(nudge_field_u%file) == '') then
+    call error_mesg('check_dynamics_nml', 'Target file for ucomp is empty when from_file=.true.', FATAL)
+  endif
+  if (nudge_field_v%is_active .and. nudge_field_v%from_file .and. trim(nudge_field_v%file) == '') then
+    call error_mesg('check_dynamics_nml', 'Target file for vcomp is empty when from_file=.true.', FATAL)
+  endif
+  if (nudge_field_t%is_active .and. nudge_field_t%from_file .and. trim(nudge_field_t%file) == '') then
+    call error_mesg('check_dynamics_nml', 'Target file for temp is empty when from_file=.true.', FATAL)
   endif
 endif
 
@@ -952,6 +1081,11 @@ call vert_advection(delta_t, wg, dp, tg(:,:,:,time_level),  dt_grid_tmp, scheme=
 dt_tg_tmp = dt_tg_tmp + dt_grid_tmp
 
 call horizontal_advection(ts(:,:,:,current), ug(:,:,:,current), vg(:,:,:,current), dt_tg_tmp)
+if (do_strat_nudging) then
+  if (nudge_field_t%is_active) then
+    call apply_strat_nudge(Time, nudge_field_t, tg(:,:,:,current), p_full, dt_tg_tmp, nudging_t_dt)
+  endif
+endif
 call trans_grid_to_spherical(dt_tg_tmp, dt_ts)
 
 do k=1,num_levels
@@ -962,7 +1096,12 @@ do k=1,num_levels
 enddo
 
 if (do_strat_nudging) then
-  call strat_nudging(Time, ug(:,:,:,current), p_full, dt_ug_tmp)
+  if (nudge_field_u%is_active) then
+    call apply_strat_nudge(Time, nudge_field_u, ug(:,:,:,current), p_full, dt_ug_tmp, nudging_u_dt)
+  endif
+  if (nudge_field_v%is_active) then
+    call apply_strat_nudge(Time, nudge_field_v, vg(:,:,:,current), p_full, dt_vg_tmp, nudging_v_dt)
+  endif
 endif
 
 call vor_div_from_uv_grid(dt_ug_tmp, dt_vg_tmp, dt_vors, dt_divs, triang = triang_trunc)
@@ -1181,101 +1320,110 @@ end subroutine four_in_one
 
 !================================================================================
 
+subroutine init_nudge_field(field)
+
+! Initializes NetCDF target reading and memory buffers for a specific nudging field.
+type(nudge_field_type), intent(inout) :: field
+integer :: f_size(4), ncid, varid, ierr, k
+character(len=8) :: ch1, ch2, ch3, ch4, ch5, ch6
+
+if (.not. field%is_active) return
+if (.not. field%from_file) return
+
+if (.not. file_exist(trim(field%file))) then
+  call error_mesg('strat_nudging_init', 'Nudging target file '//trim(field%file)//' for '//trim(field%name)//' does not exist', FATAL)
+endif
+
+f_size = 0
+call field_size(trim(field%file), trim(field%varname), f_size)
+if (lon_max /= f_size(1) .or. lat_max /= f_size(2) .or. num_levels /= f_size(3)) then
+  write(ch1,'(i4)') f_size(1)
+  write(ch2,'(i4)') f_size(2)
+  write(ch3,'(i4)') f_size(3)
+  write(ch4,'(i4)') lon_max
+  write(ch5,'(i4)') lat_max
+  write(ch6,'(i4)') num_levels
+  call error_mesg('strat_nudging_init', &
+       'Resolution of nudging data for '//trim(field%name)//' does not match model resolution.'// &
+       ' File: lon='//ch1//', lat='//ch2//', lev='//ch3// &
+       ' Model: lon='//ch4//', lat='//ch5//', lev='//ch6, FATAL)
+endif
+
+field%num_times = f_size(4)
+if (field%num_times < 1) then
+  call error_mesg('strat_nudging_init', 'Nudging file '//trim(field%file)//' has no time records', FATAL)
+endif
+
+if (allocated(field%times)) deallocate(field%times)
+allocate(field%times(field%num_times))
+
+ierr = nf90_open(trim(field%file), NF90_NOWRITE, ncid)
+if (ierr /= NF90_NOERR) then
+  call error_mesg('strat_nudging_init', 'Failed to open nudging file '//trim(field%file)//': '//trim(nf90_strerror(ierr)), FATAL)
+endif
+
+ierr = nf90_inq_varid(ncid, 'time', varid)
+if (ierr == NF90_NOERR) then
+  ierr = nf90_get_var(ncid, varid, field%times)
+  if (ierr /= NF90_NOERR) then
+    call error_mesg('strat_nudging_init', 'Failed to read time from nudging file '//trim(field%file), FATAL)
+  endif
+else
+  ! If time variable is not present, default to daily centered times: 0.5, 1.5, ...
+  do k = 1, field%num_times
+    field%times(k) = real(k, 8) - 0.5_8
+  enddo
+endif
+ierr = nf90_close(ncid)
+
+if (allocated(field%target_m)) deallocate(field%target_m)
+if (allocated(field%target_p)) deallocate(field%target_p)
+allocate(field%target_m(is:ie, js:je, num_levels))
+allocate(field%target_p(is:ie, js:je, num_levels))
+field%target_m = 0.0
+field%target_p = 0.0
+field%rec_loaded_m = -1
+field%rec_loaded_p = -1
+
+end subroutine init_nudge_field
+
+!================================================================================
+
 subroutine strat_nudging_init
 
 ! Initializes stratospheric nudging:
-! - If wavenumber filtering requested, sets up work arrays
-! - If file-based nudging requested:
-!   - Verifies file existence and resolution match with model
-!   - Reads time coordinates of target records from NetCDF file
-!   - Allocates local PE memory buffers for time-interpolated nudging
-
-integer :: u_file_siz(4), ncid, varid, ierr, k
-character(len=8) :: ch1, ch2, ch3, ch4, ch5, ch6
+! - Sets up shared Fourier work arrays if wavenumber filtering requested
+! - Calls init_nudge_field for each active field (ucomp, vcomp, temp)
 
 do_nudge_wave_filter = (nudge_wave_list(1) >= 0 .or. &
                         nudge_wave_min > 0 .or. &
                         nudge_wave_max >= 0)
 
 if (do_nudge_wave_filter) then
-  if (allocated(nudge_diff_u)) deallocate(nudge_diff_u)
+  if (allocated(nudge_diff)) deallocate(nudge_diff)
   if (allocated(nudge_fourier_diff)) deallocate(nudge_fourier_diff)
-  allocate(nudge_diff_u(is:ie, js:je, num_levels))
+  allocate(nudge_diff(is:ie, js:je, num_levels))
   allocate(nudge_fourier_diff(0:lon_max/2, js:je, num_levels))
-  nudge_diff_u = 0.0
+  nudge_diff = 0.0
   nudge_fourier_diff = cmplx(0.0, 0.0)
 endif
 
-if (.not. nudge_u_from_file) return
-
-if (.not. file_exist(trim(nudge_u_file))) then
-  call error_mesg('strat_nudging_init', 'Nudging target file '//trim(nudge_u_file)//' does not exist', FATAL)
-endif
-
-u_file_siz = 0
-call field_size(trim(nudge_u_file), trim(nudge_u_varname), u_file_siz)
-if (lon_max /= u_file_siz(1) .or. lat_max /= u_file_siz(2) .or. num_levels /= u_file_siz(3)) then
-  write(ch1,'(i4)') u_file_siz(1)
-  write(ch2,'(i4)') u_file_siz(2)
-  write(ch3,'(i4)') u_file_siz(3)
-  write(ch4,'(i4)') lon_max
-  write(ch5,'(i4)') lat_max
-  write(ch6,'(i4)') num_levels
-  call error_mesg('strat_nudging_init', &
-       'Resolution of nudging data does not match model resolution.'// &
-       ' File: lon='//ch1//', lat='//ch2//', lev='//ch3// &
-       ' Model: lon='//ch4//', lat='//ch5//', lev='//ch6, FATAL)
-endif
-
-num_nudge_times = u_file_siz(4)
-if (num_nudge_times < 1) then
-  call error_mesg('strat_nudging_init', 'Nudging file has no time records', FATAL)
-endif
-
-if (allocated(nudge_u_times)) deallocate(nudge_u_times)
-allocate(nudge_u_times(num_nudge_times))
-
-ierr = nf90_open(trim(nudge_u_file), NF90_NOWRITE, ncid)
-if (ierr /= NF90_NOERR) then
-  call error_mesg('strat_nudging_init', 'Failed to open nudging file '//trim(nudge_u_file)//': '//trim(nf90_strerror(ierr)), FATAL)
-endif
-
-ierr = nf90_inq_varid(ncid, 'time', varid)
-if (ierr == NF90_NOERR) then
-  ierr = nf90_get_var(ncid, varid, nudge_u_times)
-  if (ierr /= NF90_NOERR) then
-    call error_mesg('strat_nudging_init', 'Failed to read time from nudging file', FATAL)
-  endif
-else
-  ! If time variable is not present, default to daily centered times: 0.5, 1.5, ...
-  do k = 1, num_nudge_times
-    nudge_u_times(k) = real(k, 8) - 0.5_8
-  enddo
-endif
-ierr = nf90_close(ncid)
-
-if (allocated(u_target_m)) deallocate(u_target_m)
-if (allocated(u_target_p)) deallocate(u_target_p)
-allocate(u_target_m(is:ie, js:je, num_levels))
-allocate(u_target_p(is:ie, js:je, num_levels))
-u_target_m = 0.0
-u_target_p = 0.0
-rec_loaded_m = -1
-rec_loaded_p = -1
+call init_nudge_field(nudge_field_u)
+call init_nudge_field(nudge_field_v)
+call init_nudge_field(nudge_field_t)
 
 return
 end subroutine strat_nudging_init
 
 !================================================================================
 
-subroutine strat_nudging(Time, u_curr, p_full, dt_u)
+subroutine apply_strat_nudge(Time, field, field_curr, p_full, dt_field, diag_dt)
 
-! Relaxes zonal wind towards target profile following SNAPSI vertical profile:
-! - If nudge_u_from_file is true: target u is read from NetCDF file and linearly
-!   interpolated in time to current model time step.
-! - If nudge_u_from_file is false: target u is spatially uniform nudging_u_val.
-! - If do_nudge_wave_filter is true: target difference is filtered in Fourier space
-!   along longitude to retain only specified zonal wavenumbers (s=0 for zonal-mean,
+! Relaxes a prognostic field towards its target profile following the SNAPSI vertical profile:
+! - If field%from_file is true: target is read from NetCDF and linearly interpolated in time.
+! - If field%from_file is false: target is spatially uniform field%const_val.
+! - If do_nudge_wave_filter is true: departure from target is filtered in Fourier space
+!   along longitude to retain only specified zonal wavenumbers (e.g. s=0 for zonal-mean,
 !   s in [min, max] or explicit list).
 ! - No nudging below nudging_p_bottom (default 90 hPa)
 ! - Full strength above nudging_p_top (default 50 hPa)
@@ -1283,36 +1431,40 @@ subroutine strat_nudging(Time, u_curr, p_full, dt_u)
 ! - Relaxation timescale nudging_tau (default 6 hours = 21600 s)
 
 type(time_type), intent(in) :: Time
-real, intent(in),    dimension(is:ie, js:je, num_levels) :: u_curr, p_full
-real, intent(inout), dimension(is:ie, js:je, num_levels) :: dt_u
+type(nudge_field_type), intent(inout) :: field
+real, intent(in),    dimension(is:ie, js:je, num_levels) :: field_curr, p_full
+real, intent(inout), dimension(is:ie, js:je, num_levels) :: dt_field
+real, intent(inout), dimension(is:ie, js:je, num_levels), optional :: diag_dt
 
 integer :: i, j, k, k1, k2, sec, dy, s
-real :: p, x, weight, u_nudge, t_eff, alpha, u_target_val
+real :: p, x, weight, f_nudge, t_eff, alpha, target_val
 logical :: keep_wave
 
-if (nudge_u_from_file) then
-  call get_time(Time, sec, dy)
-  t_eff = real(dy, 8) + real(sec, 8) / 86400.0_8 + nudge_u_time_offset_days
+if (.not. field%is_active) return
 
-  if (num_nudge_times <= 1 .or. t_eff <= nudge_u_times(1)) then
+if (field%from_file) then
+  call get_time(Time, sec, dy)
+  t_eff = real(dy, 8) + real(sec, 8) / 86400.0_8 + field%time_offset
+
+  if (field%num_times <= 1 .or. t_eff <= field%times(1)) then
     k1 = 1
     k2 = 1
     alpha = 0.0
-  else if (t_eff >= nudge_u_times(num_nudge_times)) then
-    k1 = num_nudge_times
-    k2 = num_nudge_times
+  else if (t_eff >= field%times(field%num_times)) then
+    k1 = field%num_times
+    k2 = field%num_times
     alpha = 0.0
   else
     k1 = 1
-    do k = 1, num_nudge_times - 1
-      if (t_eff >= nudge_u_times(k) .and. t_eff <= nudge_u_times(k+1)) then
+    do k = 1, field%num_times - 1
+      if (t_eff >= field%times(k) .and. t_eff <= field%times(k+1)) then
         k1 = k
         exit
       endif
     enddo
     k2 = k1 + 1
-    if (nudge_u_times(k2) > nudge_u_times(k1)) then
-      alpha = (t_eff - nudge_u_times(k1)) / (nudge_u_times(k2) - nudge_u_times(k1))
+    if (field%times(k2) > field%times(k1)) then
+      alpha = (t_eff - field%times(k1)) / (field%times(k2) - field%times(k1))
       alpha = max(0.0, min(1.0, alpha))
     else
       alpha = 0.0
@@ -1321,41 +1473,42 @@ if (nudge_u_from_file) then
 
   ! Load or shift cached records on local PE domain
   if (k1 == k2) then
-    if (rec_loaded_m /= k1) then
-      call read_data(trim(nudge_u_file), trim(nudge_u_varname), u_target_m, grid_domain, timelevel=k1)
-      rec_loaded_m = k1
-      rec_loaded_p = k1
+    if (field%rec_loaded_m /= k1) then
+      call read_data(trim(field%file), trim(field%varname), field%target_m, grid_domain, timelevel=k1)
+      field%target_p = field%target_m
+      field%rec_loaded_m = k1
+      field%rec_loaded_p = k1
     endif
   else
-    if (rec_loaded_m == k1 .and. rec_loaded_p == k2) then
+    if (field%rec_loaded_m == k1 .and. field%rec_loaded_p == k2) then
       ! Already loaded
-    else if (rec_loaded_p == k1) then
-      u_target_m = u_target_p
-      rec_loaded_m = k1
-      call read_data(trim(nudge_u_file), trim(nudge_u_varname), u_target_p, grid_domain, timelevel=k2)
-      rec_loaded_p = k2
+    else if (field%rec_loaded_p == k1) then
+      field%target_m = field%target_p
+      field%rec_loaded_m = k1
+      call read_data(trim(field%file), trim(field%varname), field%target_p, grid_domain, timelevel=k2)
+      field%rec_loaded_p = k2
     else
-      call read_data(trim(nudge_u_file), trim(nudge_u_varname), u_target_m, grid_domain, timelevel=k1)
-      call read_data(trim(nudge_u_file), trim(nudge_u_varname), u_target_p, grid_domain, timelevel=k2)
-      rec_loaded_m = k1
-      rec_loaded_p = k2
+      call read_data(trim(field%file), trim(field%varname), field%target_m, grid_domain, timelevel=k1)
+      call read_data(trim(field%file), trim(field%varname), field%target_p, grid_domain, timelevel=k2)
+      field%rec_loaded_m = k1
+      field%rec_loaded_p = k2
     endif
   endif
 endif
 
 if (do_nudge_wave_filter) then
-  if (nudge_u_from_file) then
+  if (field%from_file) then
     if (k1 == k2) then
-      nudge_diff_u = u_curr - u_target_m
+      nudge_diff = field_curr - field%target_m
     else
-      nudge_diff_u = u_curr - ((1.0 - alpha) * u_target_m + alpha * u_target_p)
+      nudge_diff = field_curr - ((1.0 - alpha) * field%target_m + alpha * field%target_p)
     endif
   else
-    nudge_diff_u = u_curr - nudging_u_val
+    nudge_diff = field_curr - field%const_val
   endif
 
   ! Forward 1D FFT along longitude for local latitude slices
-  nudge_fourier_diff = trans_grid_to_fourier(nudge_diff_u)
+  nudge_fourier_diff = trans_grid_to_fourier(nudge_diff)
 
   ! Mask Fourier modes not in the selected wavenumber set
   do s = 0, lon_max/2
@@ -1370,7 +1523,7 @@ if (do_nudge_wave_filter) then
   enddo
 
   ! Inverse 1D FFT back to physical grid
-  nudge_diff_u = trans_fourier_to_grid(nudge_fourier_diff)
+  nudge_diff = trans_fourier_to_grid(nudge_fourier_diff)
 
   ! Apply SNAPSI vertical profile and relaxation timescale
   do k = 1, num_levels
@@ -1386,17 +1539,17 @@ if (do_nudge_wave_filter) then
           weight = 3.0*x*x - 2.0*x*x*x
         endif
 
-        u_nudge = - weight * nudge_diff_u(i, j, k) / nudging_tau
-        dt_u(i, j, k) = dt_u(i, j, k) + u_nudge
-        if (allocated(nudging_u_dt)) then
-          nudging_u_dt(i, j, k) = u_nudge
+        f_nudge = - weight * nudge_diff(i, j, k) / nudging_tau
+        dt_field(i, j, k) = dt_field(i, j, k) + f_nudge
+        if (present(diag_dt)) then
+          diag_dt(i, j, k) = f_nudge
         endif
       enddo
     enddo
   enddo
 
 else
-  ! Standard gridpoint nudging (original code path, zero FFT overhead)
+  ! Standard gridpoint nudging (zero FFT overhead)
   do k = 1, num_levels
     do j = js, je
       do i = is, ie
@@ -1410,20 +1563,20 @@ else
           weight = 3.0*x*x - 2.0*x*x*x
         endif
 
-        if (nudge_u_from_file) then
+        if (field%from_file) then
           if (k1 == k2) then
-            u_target_val = u_target_m(i, j, k)
+            target_val = field%target_m(i, j, k)
           else
-            u_target_val = (1.0 - alpha) * u_target_m(i, j, k) + alpha * u_target_p(i, j, k)
+            target_val = (1.0 - alpha) * field%target_m(i, j, k) + alpha * field%target_p(i, j, k)
           endif
         else
-          u_target_val = nudging_u_val
+          target_val = field%const_val
         endif
 
-        u_nudge = - weight * (u_curr(i, j, k) - u_target_val) / nudging_tau
-        dt_u(i, j, k) = dt_u(i, j, k) + u_nudge
-        if (allocated(nudging_u_dt)) then
-          nudging_u_dt(i, j, k) = u_nudge
+        f_nudge = - weight * (field_curr(i, j, k) - target_val) / nudging_tau
+        dt_field(i, j, k) = dt_field(i, j, k) + f_nudge
+        if (present(diag_dt)) then
+          diag_dt(i, j, k) = f_nudge
         endif
       enddo
     enddo
@@ -1431,7 +1584,7 @@ else
 endif
 
 return
-end subroutine strat_nudging
+end subroutine apply_strat_nudge
 
 !================================================================================
 
@@ -1893,15 +2046,20 @@ deallocate(vorg, divg)
 deallocate(surf_geopotential)
 deallocate(spec_tracers, grid_tracers)
 if(allocated(nudging_u_dt)) deallocate(nudging_u_dt)
-if(allocated(nudge_u_times)) deallocate(nudge_u_times)
-if(allocated(u_target_m)) deallocate(u_target_m)
-if(allocated(u_target_p)) deallocate(u_target_p)
-if(allocated(nudge_diff_u)) deallocate(nudge_diff_u)
+if(allocated(nudging_v_dt)) deallocate(nudging_v_dt)
+if(allocated(nudging_t_dt)) deallocate(nudging_t_dt)
+if(allocated(nudge_field_u%times)) deallocate(nudge_field_u%times)
+if(allocated(nudge_field_u%target_m)) deallocate(nudge_field_u%target_m)
+if(allocated(nudge_field_u%target_p)) deallocate(nudge_field_u%target_p)
+if(allocated(nudge_field_v%times)) deallocate(nudge_field_v%times)
+if(allocated(nudge_field_v%target_m)) deallocate(nudge_field_v%target_m)
+if(allocated(nudge_field_v%target_p)) deallocate(nudge_field_v%target_p)
+if(allocated(nudge_field_t%times)) deallocate(nudge_field_t%times)
+if(allocated(nudge_field_t%target_m)) deallocate(nudge_field_t%target_m)
+if(allocated(nudge_field_t%target_p)) deallocate(nudge_field_t%target_p)
+if(allocated(nudge_diff)) deallocate(nudge_diff)
 if(allocated(nudge_fourier_diff)) deallocate(nudge_fourier_diff)
 do_nudge_wave_filter = .false.
-rec_loaded_m = -1
-rec_loaded_p = -1
-num_nudge_times = 0
 
 if(use_implicit) call implicit_end
 call spectral_damping_end
@@ -2069,8 +2227,15 @@ id_vort_norm = register_diag_field(mod_name, 'vort_norm', Time, 'vorticity norm'
 id_EKE       = register_diag_field(mod_name, 'EKE', Time, 'eddy kinetic energy', 'J/m^2')
 
 if (do_strat_nudging) then
-  id_u_nudge = register_diag_field(mod_name, 'udt_nudge', axes_3d_full, Time, &
-                                   'zonal wind nudging tendency', 'm/sec**2')
+  if (nudge_field_u%is_active) &
+    id_u_nudge = register_diag_field(mod_name, 'udt_nudge', axes_3d_full, Time, &
+                                     'zonal wind nudging tendency', 'm/sec**2')
+  if (nudge_field_v%is_active) &
+    id_v_nudge = register_diag_field(mod_name, 'vdt_nudge', axes_3d_full, Time, &
+                                     'meridional wind nudging tendency', 'm/sec**2')
+  if (nudge_field_t%is_active) &
+    id_t_nudge = register_diag_field(mod_name, 'tdt_nudge', axes_3d_full, Time, &
+                                     'temperature nudging tendency', 'deg_K/sec')
 endif
 
 return
@@ -2103,6 +2268,8 @@ if(id_vor > 0)    used = send_data(id_vor, vorg, Time)
 if(id_div > 0)    used = send_data(id_div, divg, Time)
 if(id_omega > 0)  used = send_data(id_omega, wg_full, Time)
 if(id_u_nudge > 0 .and. allocated(nudging_u_dt)) used = send_data(id_u_nudge, nudging_u_dt, Time)
+if(id_v_nudge > 0 .and. allocated(nudging_v_dt)) used = send_data(id_v_nudge, nudging_v_dt, Time)
+if(id_t_nudge > 0 .and. allocated(nudging_t_dt)) used = send_data(id_t_nudge, nudging_t_dt, Time)
 
 if(id_zfull > 0 .or. id_zhalf > 0) then
   call compute_pressures_and_heights(t_grid, p_surf, surf_geopotential, z_full, z_half, p_full, p_half, tr_grid(:,:,:,time_level,nhum))

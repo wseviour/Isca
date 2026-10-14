@@ -69,10 +69,10 @@ if not os.path.exists(ozone_file):
 else:
     ozone_file_name = 'ozone_1990_cmip5'
 
-# 3. Stratospheric nudging target wind file
+# 3. Stratospheric nudging target forcing files
 target_u_file = os.path.join(current_dir, 'input', 'u_target_yr23.nc')
 if not os.path.exists(target_u_file):
-    raise FileNotFoundError(f"Nudging target wind file not found at {target_u_file}")
+    raise FileNotFoundError(f"Nudging target file not found at {target_u_file}")
 
 # Input files required for this experiment
 exp.inputfiles = [
@@ -82,6 +82,14 @@ exp.inputfiles = [
     mg_drag_file,
     target_u_file,
 ]
+
+# Optional 3D target forcing files for meridional wind (vcomp) and temperature (temp)
+target_v_file = os.path.join(current_dir, 'input', 'v_target_yr23.nc')
+target_t_file = os.path.join(current_dir, 'input', 't_target_yr23.nc')
+if os.path.exists(target_v_file):
+    exp.inputfiles.append(target_v_file)
+if os.path.exists(target_t_file):
+    exp.inputfiles.append(target_t_file)
 
 diag = DiagTable()
 diag.add_file('atmos_monthly', 30, 'days', time_units='days')
@@ -108,8 +116,10 @@ diag.add_field('damping', 'taus', files=['atmos_monthly'], time_avg=True)
 diag.add_field('damping', 'tdt_diss_gwd', files=['atmos_monthly'], time_avg=True)
 diag.add_field('damping', 'sgsmtn', files=['atmos_monthly'], time_avg=True)
 
-# Stratospheric nudging tendency diagnostic
+# Stratospheric nudging tendency diagnostics
 diag.add_field('dynamics', 'udt_nudge', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'vdt_nudge', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
+diag.add_field('dynamics', 'tdt_nudge', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
 
 # Coordinate and pressure variables
 diag.add_field('dynamics', 'ps', files=['atmos_monthly', 'atmos_daily'], time_avg=True)
@@ -139,113 +149,199 @@ exp.namelist = namelist = Namelist({
         'calendar': 'thirty_day',
     },
 
+    'atmosphere_nml': {
+        'idealized_moist_model': True,
+    },
+
+    'topography_nml': {
+        'topog_file': 'INPUT/navy_topography.data.nc',
+        'water_file': 'INPUT/navy_pctwater.data.nc',
+    },
+
+    'spectral_init_cond_nml': {
+        'topography_option': 'interpolated',
+        'initial_temperature': 264.0,
+    },
+
     'idealized_moist_phys_nml': {
+        'convection_scheme': 'FULL_BETTS_MILLER',
         'do_damping': True,
-        'mixed_layer_bc': True,
-        'do_bm': True,
-        'bm_conserve_energy': True,
-        'do_lw': False,
-        'do_gray_radiation': False,
         'do_rrtm_radiation': True,
+        'do_simple': True,
+        'do_virtual': False,
+        'land_option': 'interpolated',
+        'mixed_layer_bc': True,
+        'mom_roughness_land': 5000.0,
+        'q_roughness_land': 1e-12,
+        'roughness_choice': 4,
+        'roughness_heat': 3.21e-05,
+        'roughness_moist': 3.21e-05,
+        'roughness_mom': 3.21e-05,
+        'turb': True,
+        'two_stream_gray': False,
+    },
+
+    'vert_turb_driver_nml': {
+        'constant_gust': 0.0,
+        'do_diffusivity': True,
+        'do_mellor_yamada': False,
+        'do_simple': True,
+        'use_tau': False,
+    },
+
+    'diffusivity_nml': {
+        'do_entrain': False,
+        'do_simple': True,
+    },
+
+    'monin_obukhov_nml': {
+        'drag_min': 4.0e-05,
+        'rich_crit': 2.0,
     },
 
     'surface_flux_nml': {
-        'use_virtual_temp': True,
-        'land_sea_roughness_contrast': True,
-        'roughness_choice': 4,
+        'do_simple': True,
+        'gust_const': 1.0,
+        'old_dtaudv': True,
+        'use_virtual_temp': False,
     },
 
     'mixed_layer_nml': {
-        'albedo_value': 0.38,
-        'do_qflux': True,
-        'load_qflux': False,
-        'qflux_amp': 30.0,
-        'qflux_width': 16.0,
-        'land_sea_albedo_contrast': True,
         'albedo_choice': 7,
-        'land_sea_heat_capacity_contrast': True,
-        'heat_capacity_choice': 1,
-        'depth': 2.5,
+        'albedo_cntrnh': 68.0,
+        'albedo_cntrsh': 64.0,
+        'albedo_wdth': 5.0,
+        'const_albedo': 0.23,
+        'do_qflux': True,
+        'do_warmpool': True,
+        'evaporation': True,
+        'heat_capacity': 300000000.0,
+        'higher_albedo': 0.8,
+        'land_capacity': 10000000.0,
+        'land_option': 'interpolated',
+        'lat_glacier': -70.0,
+        'prescribe_initial_dist': True,
+        'surface_choice': 1,
+        'tconst': 285.0,
+        'trop_cap_limit': 20.0,
+        'trop_capacity': 100000000.0,
+    },
+
+    'qflux_nml': {
+        'gulf_amp': 70.0,
+        'gulf_k': 4,
+        'gulf_phase': 310.0,
+        'hawaiiextra': 30.0,
+        'kuroshio_amp': 40.0,
+        'north_sea_heat': 0.0,
+        'pac_itczextra': 0.0,
+        'qflux_amp': 26.0,
+        'qflux_width': 16.0,
+        'trop_atlantic_amp': 50.0,
+        'warmpool_amp': 18.0,
+        'warmpool_centr': 0.0,
+        'warmpool_k': 1.66666,
+        'warmpool_localization_choice': 3,
+        'warmpool_phase': 140.0,
+        'warmpool_width': 35.0,
     },
 
     'betts_miller_nml': {
-        'rhbm': 0.7,
-        'do_simp': False,
+        'capetaubm': 900.0,
+        'do_changeqref': False,
+        'do_envsat': False,
         'do_shallower': True,
+        'do_simp': False,
+        'do_taucape': False,
+        'rhbm': 0.7,
+        'tau_bm': 7200.0,
+        'tau_min': 2400.0,
+    },
+
+    'lscale_cond_nml': {
+        'do_evap': True,
+        'do_simple': True,
+    },
+
+    'sat_vapor_pres_nml': {
+        'do_simple': True,
     },
 
     'damping_driver_nml': {
         'do_cg_drag': True,
+        'do_conserve_energy': True,
         'do_mg_drag': True,
         'do_rayleigh': False,
+        'sponge_pbottom': 50.0,
+        'trayfric': -0.5,
     },
 
     'mg_drag_nml': {
-        'do_mconv': False,
-        'do_block': True,
-        'do_wave': True,
-        'gflux_fac': 0.125,
-        'gflux_fac_front': 0.0,
-        'crit_frac': 0.375,
-        'block_fac': 0.5,
-        'cg_drag_freq': 21600,
-        'source_level_pressure': 315.e+02,
-        'tau_min': 1.e-05,
-        'efac': 1.0,
+        'acoef': 1.0,
+        'do_conserve_energy': True,
+        'do_mcm_mg_drag': False,
+        'do_netcdf_restart': True,
+        'flux_cut_level': 0.0,
+        'gmax': 1.0,
+        'low_lev_frac': 0.23,
+        'rho': 1.13,
+        'source_of_sgsmtn': 'input',
+        'xl_mtn': 100000.0,
     },
 
     'cg_drag_nml': {
-        'Bt_nh': 0.0010,
-        'phi0n': 25.0,
-        'dphin': 10.0,
-        'Bt_eq': 0.0043,
-        'Bt_sh': 0.0,
-        'phi0s': -15.,
-        'dphis': -10.,
-        'flag': 0,
-        'Bw': 0.4,
-        'Bn': 0.0,
+        'bn': 0.0,
+        'bt_0': 0.0043,
+        'bt_eq': 0.0043,
+        'bt_nh': 0.0010,
+        'bt_sh': 0.0,
+        'bw': 0.4,
+        'cg_drag_freq': 21600,
+        'cn': 2.0,
         'cw': 35.0,
         'cwtropics': 35.0,
-        'cn': 2.0,
+        'damp_level_pressure': 85.0,
+        'dphin': 10.0,
+        'dphis': -10.0,
+        'flag': 0,
         'kelvin_kludge': 1.0,
-        'weighttop': 0.7,
+        'phi0n': 25.0,
+        'phi0s': -15.0,
+        'source_level_pressure': 31500.0,
         'weightminus1': 0.28,
         'weightminus2': 0.02,
-        'source_level_pressure': 315.e+02,
-        'damp_level_pressure': 0.85e+02,
-        'cg_drag_freq': 21600
+        'weighttop': 0.7,
     },
 
     'rrtm_radiation_nml': {
-        'do_read_ozone': True,
-        'ozone_file': ozone_file_name,
-        'solr_cnst': 1370.,
-        'dt_rad': 4500,
+        'co2ppmv': 390.0,
         'do_read_co2': False,
-        'co2ppmv': 390.,
+        'do_read_ozone': True,
+        'dt_rad': 4500,
+        'ozone_file': ozone_file_name,
+        'solr_cnst': 1370.0,
     },
 
     'diag_manager_nml': {
-        'mix_snapshot_average_fields': False
+        'mix_snapshot_average_fields': False,
     },
 
     'fms_nml': {
-        'domains_stack_size': 600000
+        'domains_stack_size': 600000,
     },
 
     'fms_io_nml': {
-        'threading_write': 'single',
         'fileset_write': 'single',
+        'threading_write': 'single',
     },
 
     'spectral_dynamics_nml': {
         'damping_order': 4,
-        'water_correction_limit': 200.e2,
-        'reference_sea_level_press': 1.0e5,
+        'water_correction_limit': 20000.0,
+        'reference_sea_level_press': 100000.0,
         'num_levels': 40,
-        'valid_range_t': [100., 800.],
-        'initial_sphum': [2.e-6],
+        'valid_range_t': [100.0, 800.0],
+        'initial_sphum': 2e-06,
         'vert_coord_option': 'uneven_sigma',
         'surf_res': 0.1,
         'scale_heights': 7.9,
@@ -261,13 +357,29 @@ exp.namelist = namelist = Namelist({
         # 1. Master enable switch:
         'do_strat_nudging': True,
 
-        # 2. Target forcing profile specification:
-        #    - True: read spatially and temporally varying u from external NetCDF file
-        #    - False: relax towards spatially uniform constant value 'nudging_u_val'
+        # 2. Variables to nudge:
+        #    Accepts list containing: 'ucomp', 'vcomp', 'temp'
+        #    - Default: ['ucomp'] (nudging zonal wind towards u_target_yr23.nc)
+        #    - Following SNAPSI protocol (Hitchcock et al., 2022):
+        #      * Zonal-mean nudging (s = 0): ['ucomp', 'temp']
+        #      * Multi-wavenumber / full nudging: ['ucomp', 'vcomp', 'temp']
+        'nudge_vars': ['ucomp'],
+
+        # 3. Target forcing profile specifications:
         'nudge_u_from_file': True,
         'nudge_u_file': 'INPUT/u_target_yr23.nc',
         'nudge_u_varname': 'ucomp',
         'nudge_u_time_offset_days': 0.0,
+
+        'nudge_v_from_file': True if os.path.exists(target_v_file) else False,
+        'nudge_v_file': 'INPUT/v_target_yr23.nc',
+        'nudge_v_varname': 'vcomp',
+        'nudge_v_time_offset_days': 0.0,
+
+        'nudge_t_from_file': True if os.path.exists(target_t_file) else False,
+        'nudge_t_file': 'INPUT/t_target_yr23.nc',
+        'nudge_t_varname': 'temp',
+        'nudge_t_time_offset_days': 0.0,
 
         # 3. Relaxation timescale tau in seconds (e.g. 21600.0 s = 6 hours)
         'nudging_tau': 21600.0,
