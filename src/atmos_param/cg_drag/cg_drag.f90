@@ -7,7 +7,8 @@ use fms_mod,                only:  fms_init, mpp_pe, mpp_root_pe,  &
                                    close_file, open_namelist_file, &
                                    stdlog, write_version_number, &
                                    read_data, write_data,   &
-                                   open_restart_file
+                                   open_restart_file, nullify_domain
+use transforms_mod,         only:  grid_domain
 !mj no restart file, as this specific implementation only works with cubed sphere
 !use fms_io_mod,             only:  register_restart_field, restart_file_type, &
 !                                   save_restart, restore_state, get_mosaic_tile_file
@@ -314,6 +315,7 @@ integer,                 intent(in)      :: is, ie, js, je !RC 5/12/19
       integer                 :: unit, ierr, io, logunit
       integer                 :: n, i, j, k
       integer                 :: idf, jdf, kmax
+      real, dimension(2)      :: alarm_pointers
       real                    :: pif = 3.14159265358979/180.
 !      real                    :: pif = PI/180.
 
@@ -571,12 +573,23 @@ integer,                 intent(in)      :: is, ie, js, je !RC 5/12/19
            call error_mesg('cg_drag','cg_drag_freq must divide 86400 (full day) or equal 0', FATAL)
         endif
      endif
-     gwd_u(:,:,:) = 0.0
-     gwd_v(:,:,:) = 0.0
-     if (cg_drag_offset > 0) then
-        cgdrag_alarm = cg_drag_offset
+     if (file_exist('INPUT/cg_drag.res.nc')) then
+        if (mpp_pe() == mpp_root_pe()) then
+           call error_mesg('cg_drag_mod', 'Reading NetCDF formatted restart file: INPUT/cg_drag.res.nc', NOTE)
+        endif
+        call nullify_domain()
+        call read_data('INPUT/cg_drag.res.nc', 'cgdrag_alarm', alarm_pointers)
+        cgdrag_alarm = int(alarm_pointers(1))
+        call read_data('INPUT/cg_drag.res.nc', 'gwd_u', gwd_u, grid_domain)
+        call read_data('INPUT/cg_drag.res.nc', 'gwd_v', gwd_v, grid_domain)
      else
-        cgdrag_alarm = cg_drag_freq
+        gwd_u(:,:,:) = 0.0
+        gwd_v(:,:,:) = 0.0
+        if (cg_drag_offset > 0) then
+           cgdrag_alarm = cg_drag_offset
+        else
+           cgdrag_alarm = 0
+        endif
      endif
 !!$      endif
 !!$      vers = restart_versions(size(restart_versions(:)))
@@ -944,11 +957,15 @@ subroutine cg_drag_end
 
 !For version 3 and after, use NetCDF restarts.
 !mj don't restart anymore
-!!$      if (mpp_pe() == mpp_root_pe() ) &
-!!$            call error_mesg ('cg_drag_mod', 'write_restart_nc: &
-!!$              &Writing netCDF formatted restart file as &
-!!$                &requested. ', NOTE)
-!!$      call cg_drag_restart
+      if (.not. module_is_initialized) return
+
+      if (mpp_pe() == mpp_root_pe() ) &
+            call error_mesg ('cg_drag_mod', 'write_restart_nc: &
+              &Writing netCDF formatted restart file: RESTART/cg_drag.res.nc', NOTE)
+      call nullify_domain()
+      call write_data('RESTART/cg_drag.res', 'cgdrag_alarm', (/real(cgdrag_alarm), real(cg_drag_freq)/))
+      call write_data('RESTART/cg_drag.res', 'gwd_u', gwd_u, grid_domain)
+      call write_data('RESTART/cg_drag.res', 'gwd_v', gwd_v, grid_domain)
 
 
 #ifdef COL_DIAG
