@@ -314,7 +314,7 @@ integer,                 intent(in)      :: is, ie, js, je !RC 5/12/19
 
       integer                 :: unit, ierr, io, logunit
       integer                 :: n, i, j, k
-      integer                 :: idf, jdf, kmax
+      integer                 :: idf, jdf, kmax, old_time_step
       real, dimension(2)      :: alarm_pointers
       real                    :: pif = 3.14159265358979/180.
 !      real                    :: pif = PI/180.
@@ -579,9 +579,24 @@ integer,                 intent(in)      :: is, ie, js, je !RC 5/12/19
         endif
         call nullify_domain()
         call read_data('INPUT/cg_drag.res.nc', 'cgdrag_alarm', alarm_pointers)
-        cgdrag_alarm = int(alarm_pointers(1))
+        cgdrag_alarm  = int(alarm_pointers(1))
+        old_time_step = int(alarm_pointers(2))
         call read_data('INPUT/cg_drag.res.nc', 'gwd_u', gwd_u, grid_domain)
         call read_data('INPUT/cg_drag.res.nc', 'gwd_v', gwd_v, grid_domain)
+        if (cg_drag_freq /= old_time_step) then
+           if (cgdrag_alarm > 0) then
+              cgdrag_alarm = max(0, cgdrag_alarm - old_time_step + cg_drag_freq)
+           endif
+           if (mpp_pe() == mpp_root_pe()) then
+              call error_mesg('cg_drag_mod', &
+                   'cgdrag time step has changed, next cgdrag time also changed', NOTE)
+           endif
+        endif
+        if (cg_drag_offset /= 0) then
+           if (cgdrag_alarm > cg_drag_offset) then
+              cgdrag_alarm = cg_drag_offset
+           endif
+        endif
      else
         gwd_u(:,:,:) = 0.0
         gwd_v(:,:,:) = 0.0
